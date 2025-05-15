@@ -55,11 +55,30 @@ class PhotoEditor:
 
     def display_image(self):
         if self.image:
+            # Get original image size
             img = self.image.copy()
-            img.thumbnail((800, 500))
+            img_width, img_height = img.size
+
+            # Get canvas size
+            canvas_width = self.canvas.winfo_width()
+            canvas_height = self.canvas.winfo_height()
+
+            if canvas_width <= 1 or canvas_height <= 1:
+                # This ensures the canvas is fully initialized
+                canvas_width = 800
+                canvas_height = 500
+
+            # Calculate the resize ratio while keeping aspect ratio
+            ratio = min(canvas_width / img_width, canvas_height / img_height)
+            new_size = (int(img_width * ratio), int(img_height * ratio))
+            img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+            # Display image on canvas
             self.tk_image = ImageTk.PhotoImage(img)
             self.canvas.delete("all")
-            self.canvas_image_id = self.canvas.create_image(400, 250, image=self.tk_image)
+            x_center = canvas_width // 2
+            y_center = canvas_height // 2
+            self.canvas_image_id = self.canvas.create_image(x_center, y_center, image=self.tk_image)
 
     def undo(self):
         if self.image_stack:
@@ -133,13 +152,6 @@ class PhotoEditor:
                 self.display_image()
                 return
 
-    def show_image(self):
-        if self.image:
-            display = self.image.copy()
-            display.thumbnail((600, 400))
-            self.display_image = ImageTk.PhotoImage(display)
-            self.canvas.create_image(300, 200, image=self.display_image)
-
     def apply_grayscale(self):
         if self.image:
             self.push_state()
@@ -150,7 +162,7 @@ class PhotoEditor:
         if self.image:
             sepia = ImageOps.colorize(self.image.convert("L"), '#704214', '#C0A080')
             self.image = sepia
-            self.show_image()
+            self.display_image()
 
     def apply_invert(self):
         if self.image:
@@ -161,12 +173,12 @@ class PhotoEditor:
     def apply_blur(self):
         if self.image:
             self.image = self.image.filter(ImageFilter.GaussianBlur(2))
-            self.show_image()
+            self.display_image()
 
     def rotate_image(self, angle):
         if self.image:
             self.image = self.image.rotate(angle, expand=True)
-            self.show_image()
+            self.display_image()
 
     def save_image(self):
         if self.image:
