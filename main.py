@@ -1,8 +1,48 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 from PIL import Image, ImageTk, ImageEnhance, ImageFilter, ImageOps
 import cv2
 import os
+
+
+#-----------------------------
+# UTILITY
+#-----------------------------
+
+class ToolTip:
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tipwindow = None
+        self.widget.bind("<Enter>", self.show_tip)
+        self.widget.bind("<Leave>", self.hide_tip)
+
+    def show_tip(self, event=None):
+        if self.tipwindow or not self.text:
+            return
+
+        # Get mouse pointer location instead of relying on widget.bbox("insert")
+        x = self.widget.winfo_pointerx() + 20
+        y = self.widget.winfo_pointery() + 20
+
+        self.tipwindow = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)  # Remove window decorations
+        tw.wm_geometry(f"+{x}+{y}")
+
+        label = tk.Label(
+            tw,
+            text=self.text,
+            background="#ffffe0",
+            relief="solid",
+            borderwidth=1,
+            font=("tahoma", "9", "normal")
+        )
+        label.pack(ipadx=5, ipady=2)
+
+    def hide_tip(self, event=None):
+        if self.tipwindow:
+            self.tipwindow.destroy()
+            self.tipwindow = None
 
 
 class PhotoEditor:
@@ -25,33 +65,28 @@ class PhotoEditor:
         self.canvas.bind("<ButtonPress-1>", self.on_mouse_press)
         self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_mouse_release)
+        ToolTip(self.canvas, "Drag your mouse to crop the image")
 
         # Buttons
         btn_frame = tk.Frame(root)
         btn_frame.pack()
 
-        tk.Button(btn_frame, text="Open Image", command=self.open_image).grid(row=0, column=0, padx=5)
-        tk.Button(btn_frame, text="Capture Photo", command=self.capture_photo).grid(row=0, column=1, padx=5)
+        tk.Button(btn_frame, text="Undo", command=self.undo).grid(row=1, column=4, padx=5)
+        tk.Button(btn_frame, text="Redo", command=self.redo).grid(row=1, column=5, padx=5)
         tk.Button(btn_frame, text="Grayscale", command=self.apply_grayscale).grid(row=0, column=2, padx=5)
         tk.Button(btn_frame, text="Sepia", command=self.apply_sepia).grid(row=0, column=3, padx=5)
         tk.Button(btn_frame, text="Invert", command=self.apply_invert).grid(row=0, column=4, padx=5)
         tk.Button(btn_frame, text="Blur", command=self.apply_blur).grid(row=0, column=5, padx=5)
-        tk.Button(btn_frame, text="Rotate Left", command=lambda: self.rotate_image(-90)).grid(row=1, column=0, padx=5, pady=10)
-        tk.Button(btn_frame, text="Rotate Right", command=lambda: self.rotate_image(90)).grid(row=1, column=1, padx=5)
-        # tk.Button(btn_frame, text="Crop Center", command=self.crop_image).grid(row=1, column=2, padx=5)
+        tk.Button(btn_frame, text="Rotate", command=lambda: self.rotate_image(90)).grid(row=1, column=1, padx=5)
         tk.Button(btn_frame, text="Save Image", command=self.save_image).grid(row=1, column=3, padx=5)
+        tk.Button(root, text='Exit', command=root.destroy).place(relx=1.0, x=-10, y=10, anchor='ne')  # top-right corner with 10px padding
 
     def push_state(self):
         if self.image:
             self.image_stack.append(self.image.copy())
+            if len(self.image_stack) > 20:  # Keep only the last 20 edits
+                self.image_stack.pop(0)
             self.redo_stack.clear()
-
-    def open_image(self):
-        path = filedialog.askopenfilename(filetypes=[("Image files", "*.png *.jpg *.jpeg")])
-        if path:
-            self.image = Image.open(path)
-            self.push_state()
-            self.display_image()
 
     def display_image(self):
         if self.image:
@@ -88,9 +123,11 @@ class PhotoEditor:
 
     def redo(self):
         if self.redo_stack:
-            self.push_state()
+            self.image_stack.append(self.image.copy())  # Manual push to undo stack
             self.image = self.redo_stack.pop()
             self.display_image()
+        else:
+            print("Nothing to redo.")
 
     def on_mouse_press(self, event):
         self.start_x = event.x
@@ -125,33 +162,6 @@ class PhotoEditor:
                 self.image = self.image.crop((left, upper, right, lower))
                 self.display_image()
 
-    def capture_photo(self):
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            messagebox.showerror("Error", "Webcam not found.")
-            return
-
-        messagebox.showinfo("Webcam", "Press SPACE to capture, ESC to cancel.")
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            cv2.imshow("Press SPACE to capture", frame)
-            key = cv2.waitKey(1)
-            if key == 27:  # ESC to cancel
-                cap.release()
-                cv2.destroyAllWindows()
-                return
-            elif key == 32:  # SPACE to capture
-                cv2.imwrite("captured_webcam_image.jpg", frame)
-                cap.release()
-                cv2.destroyAllWindows()
-                self.image = Image.open("captured_webcam_image.jpg")
-                self.push_state()
-                self.display_image()
-                return
-
     def apply_grayscale(self):
         if self.image:
             self.push_state()
@@ -160,6 +170,7 @@ class PhotoEditor:
 
     def apply_sepia(self):
         if self.image:
+            self.push_state()
             sepia = ImageOps.colorize(self.image.convert("L"), '#704214', '#C0A080')
             self.image = sepia
             self.display_image()
@@ -172,11 +183,13 @@ class PhotoEditor:
 
     def apply_blur(self):
         if self.image:
+            self.push_state()
             self.image = self.image.filter(ImageFilter.GaussianBlur(2))
             self.display_image()
 
     def rotate_image(self, angle):
         if self.image:
+            self.push_state()  # Add this line
             self.image = self.image.rotate(angle, expand=True)
             self.display_image()
 
@@ -188,8 +201,104 @@ class PhotoEditor:
                 self.image.save(save_path)
                 messagebox.showinfo("Saved", f"Image saved to {save_path}")
 
+def open_or_capture_picture():
+    """Ask the user to either open an existing picture or capture a new one."""
+
+    response = simpledialog.askstring(
+        "Choose Action",
+        "Would you like to open an existing picture or capture a new one with your webcam? (Enter 'open' or 'capture')"
+    )
+
+    if response and response.lower() == "open":
+        # open existing image
+        path = filedialog.askopenfilename(filetypes=[("Image files", "*.png *.jpg *.jpeg")])
+        if path:
+            messagebox.showinfo("Success", f"Picture selected: {path}")
+            return path
+        else:
+            messagebox.showinfo("Failure", "No file selected.")
+            return None
+    elif response and response.lower() == "capture":
+        # Step 1: Show a temporary loading window
+        loading_win = tk.Toplevel()
+        loading_win.title("Loading")
+        loading_win.geometry("200x100")
+        loading_win.resizable(False, False)
+        loading_label = tk.Label(loading_win, text="Initializing webcam...", font=("Arial", 12))
+        loading_label.pack(expand=True)
+
+        loading_win.grab_set()
+        loading_win.update()
+
+        # Step 2: Initialize webcam
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            loading_win.destroy()
+            messagebox.showerror("Error", "Webcam not found.")
+            return
+
+        # Warm up webcam with a few frames
+        for _ in range(5):
+            ret, _ = cap.read()
+            if not ret:
+                cap.release()
+                loading_win.destroy()
+                messagebox.showerror("Error", "Could not read from webcam.")
+                return
+
+        # Step 3: Close loading window
+        loading_win.destroy()
+
+        # Step 4: Show instructions now that webcam is ready
+        messagebox.showinfo("Webcam", "Press SPACE to capture, ESC to cancel.")
+
+        # Step 5: Start OpenCV live preview
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            cv2.imshow("Press SPACE to capture", frame)
+            key = cv2.waitKey(1)
+            if key == 27:  # ESC
+                cap.release()
+                cv2.destroyAllWindows()
+                return
+            elif key == 32:  # SPACE
+                cv2.imwrite("captured_webcam_image.jpg", frame)
+                cap.release()
+                cv2.destroyAllWindows()
+                return "captured_webcam_image.jpg"
+    else:
+        messagebox.showwarning("Invalid choice", "Please enter 'open' or 'create'.")
+        return None
+
 
 if __name__ == "__main__":
+
+    # Step 1: Create the root window but keep it hidden
     root = tk.Tk()
+    root.withdraw()
+
+    # Step 2: open or capture picture
+    photo_path = open_or_capture_picture()
+    if not photo_path:
+        messagebox.showwarning("Error", "No image selected. Exiting application.")
+        exit()  # don't proceed if no image
+
+    # Step 3: Create the app instance
     app = PhotoEditor(root)
+
+    # Step 4: Load the image
+    app.image = Image.open(photo_path)
+    app.push_state()
+    app.display_image()
+
+    # Step 5: Show the GUI
+    root.deiconify()
     root.mainloop()
+
+
+# BUTTON TO ENABLE CROPPING?
+# FITTING OF IMAGE INTO CANVAS?
+# ADD MENU?? NEW IMAGE??
