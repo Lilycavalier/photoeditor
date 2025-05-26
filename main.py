@@ -60,7 +60,7 @@ class PhotoEditor:
         file_menu.add_command(label="Capture\tCtrl+C", command=self.capture_photo)
         file_menu.add_command(label="Save\tCtrl+S", command=self.save_image)
         file_menu.add_separator()
-        file_menu.add_command(label="Exit\tCtrl+Q", command=self.root.quit)
+        file_menu.add_command(label="Exit\tCtrl+Q", command=self.exit_program)
         menubar.add_cascade(label="File", menu=file_menu)
 
         # Edit menu
@@ -80,7 +80,7 @@ class PhotoEditor:
         self.root.bind_all("<Control-s>", lambda event: self.save_image())
         self.root.bind_all("<Control-z>", lambda event: self.undo())
         self.root.bind_all("<Control-y>", lambda event: self.redo())
-        self.root.bind_all("<Control-q>", lambda event: self.root.quit())
+        self.root.bind_all("<Control-q>", lambda event: self.exit_program())
         self.root.bind_all("<F1>", lambda event: self.show_about())
 
         # Set the menu bar
@@ -100,6 +100,12 @@ class PhotoEditor:
         self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_mouse_release)
         ToolTip(self.canvas, "Drag your mouse to crop the image")
+
+        # Load last session image
+        if os.path.exists("last_session_image.jpg"):
+            self.image = Image.open("last_session_image.jpg")
+            self.push_state()
+            self.display_image()
 
         # Buttons
         btn_frame = tk.Frame(root)
@@ -142,6 +148,7 @@ class PhotoEditor:
         cap = cv2.VideoCapture(0)
         if not cap.isOpened():
             messagebox.showerror("Error", "Webcam not found.")
+            loading_win.destroy()
             return
 
         loading_win.destroy()
@@ -162,7 +169,9 @@ class PhotoEditor:
                 cv2.imwrite("captured_webcam_image.jpg", frame)
                 cap.release()
                 cv2.destroyAllWindows()
-                self.image = Image.open("captured_webcam_image.jpg")
+                with Image.open("captured_webcam_image.jpg") as img:
+                    self.image = img.copy()
+                os.remove("captured_webcam_image.jpg")  # delete immediately after loading
                 self.push_state()
                 self.display_image()
                 return
@@ -179,8 +188,8 @@ class PhotoEditor:
 
             if canvas_width <= 1 or canvas_height <= 1:
                 # This ensures the canvas is fully initialized
-                canvas_width = 800
-                canvas_height = 500
+                canvas_width = 600
+                canvas_height = 400
 
             # Calculate the resize ratio while keeping aspect ratio
             ratio = min(canvas_width / img_width, canvas_height / img_height)
@@ -196,7 +205,7 @@ class PhotoEditor:
 
     def undo(self):
         if self.image_stack:
-            self.redo_stack.append(self.image)
+            self.redo_stack.append(self.image.copy())
             self.image = self.image_stack.pop()
             self.display_image()
 
@@ -227,8 +236,8 @@ class PhotoEditor:
 
             if bbox and bbox[2] - bbox[0] > 10 and bbox[3] - bbox[1] > 10:
                 img_width, img_height = self.image.size
-                canvas_width = 800
-                canvas_height = 500
+                canvas_width = 600
+                canvas_height = 400
                 scale_x = img_width / canvas_width
                 scale_y = img_height / canvas_height
 
@@ -250,8 +259,21 @@ class PhotoEditor:
     def apply_sepia(self):
         if self.image:
             self.push_state()
-            sepia = ImageOps.colorize(self.image.convert("L"), '#704214', '#C0A080')
-            self.image = sepia
+            img = self.image.convert("RGB")
+            width, height = img.size
+            pixels = img.load()  # create the pixel map
+
+            for py in range(height):
+                for px in range(width):
+                    r, g, b = pixels[px, py]
+
+                    tr = int(0.393 * r + 0.769 * g + 0.189 * b)
+                    tg = int(0.349 * r + 0.686 * g + 0.168 * b)
+                    tb = int(0.272 * r + 0.534 * g + 0.131 * b)
+
+                    pixels[px, py] = (min(255, tr), min(255, tg), min(255, tb))
+
+            self.image = img
             self.display_image()
 
     def apply_invert(self):
@@ -280,13 +302,30 @@ class PhotoEditor:
                 self.image.save(save_path)
                 messagebox.showinfo("Saved", f"Image saved to {save_path}")
 
+    def exit_program(self):
+        if self.image:
+            if messagebox.askyesno("Save", "Do you want to save your changes before exiting?"):
+                self.save_image()
+            self.image.save("last_session_image.jpg")
+        self.root.destroy()
+
 
 if __name__ == "__main__":
     root = tk.Tk()
     app = PhotoEditor(root)
+
+    def on_closing():
+        if app.image:
+            # Save to a hidden temporary file or a known file path
+            app.image.save("last_session_image.jpg")
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_closing)
     root.mainloop()
 
 
-# BUTTON TO ENABLE CROPPING?
-# KEEP TRACK OF LAST OPENED IMAGE AND SAVE IT??
 # FACE RECOGNITION??
+# DIFFERENT MENUS BASED ON COMBOBOX SELECTION??
+# DISABLE BUTTONS IF NO IMAGE??
+# BUTTON TO ENABLE CROPPING?
+# IMPROVE SIZING OF CANVAS -> DYNAMICALLY??
