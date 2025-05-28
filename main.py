@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog
+from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk, ImageEnhance, ImageFilter, ImageOps
 import cv2
 import os
@@ -107,15 +107,69 @@ class PhotoEditor:
             self.push_state()
             self.display_image()
 
-        # Buttons
-        btn_frame = tk.Frame(root)
-        btn_frame.pack()
+        # Radiobuttons
+        category_frame = tk.Frame(root)
+        category_frame.pack(fill='x')
 
-        tk.Button(btn_frame, text="Grayscale", command=self.apply_grayscale).grid(row=0, column=2, padx=5)
-        tk.Button(btn_frame, text="Sepia", command=self.apply_sepia).grid(row=0, column=3, padx=5)
-        tk.Button(btn_frame, text="Invert", command=self.apply_invert).grid(row=0, column=4, padx=5)
-        tk.Button(btn_frame, text="Blur", command=self.apply_blur).grid(row=0, column=5, padx=5)
-        tk.Button(btn_frame, text="Rotate", command=lambda: self.rotate_image(90)).grid(row=0, column=1, padx=5)
+        button_container = tk.Frame(category_frame)
+        button_container.pack(anchor='center')
+
+        # Radiobuttons for categories
+        self.option_var = tk.StringVar(value="Transform")
+        for cat in ["Transform", "Filters", "Tone", "Extra"]:
+            rb = tk.Radiobutton(button_container, text=cat, variable=self.option_var, value=cat,
+                                command=self.update_button_frame)
+            rb.pack(side="left", padx=10)
+
+        # Add a horizontal separator
+        separator = ttk.Separator(root, orient='horizontal')
+        separator.pack(fill='x', pady=5)
+
+        # Container for tool frames
+        self.tool_frames = {}
+
+        self.tools_container = tk.Frame(root)
+        self.tools_container.pack()
+
+        # Transform tools
+        transform_frame = tk.Frame(self.tools_container)
+        tk.Button(transform_frame, text="Rotate", command=lambda: self.rotate_image(90)).pack(side="left", padx=5)
+        tk.Button(transform_frame, text="Flip Horizontal", command=self.flip_horizontal).pack(side="left", padx=5)
+        tk.Button(transform_frame, text="Flip Vertical", command=self.flip_vertical).pack(side="left", padx=5)
+        self.tool_frames["Transform"] = transform_frame
+
+        # Filters
+        filters_frame = tk.Frame(self.tools_container)
+        tk.Button(filters_frame, text="Grayscale", command=self.apply_grayscale).pack(side="left", padx=5)
+        tk.Button(filters_frame, text="Sepia", command=self.apply_sepia).pack(side="left", padx=5)
+        tk.Button(filters_frame, text="Invert", command=self.apply_invert).pack(side="left", padx=5)
+        tk.Button(filters_frame, text="Blur", command=self.apply_blur).pack(side="left", padx=5)
+        self.tool_frames["Filters"] = filters_frame
+
+        # Tone adjustments
+        tone_frame = tk.Frame(self.tools_container)
+        tk.Button(tone_frame, text="Brightness +", command=lambda: self.adjust_brightness(1.2)).pack(side="left",
+                                                                                                     padx=5)
+        tk.Button(tone_frame, text="Brightness -", command=lambda: self.adjust_brightness(0.8)).pack(side="left",
+                                                                                                     padx=5)
+        tk.Button(tone_frame, text="Contrast +", command=lambda: self.adjust_contrast(1.2)).pack(side="left", padx=5)
+        tk.Button(tone_frame, text="Contrast -", command=lambda: self.adjust_contrast(0.8)).pack(side="left", padx=5)
+        self.tool_frames["Tone"] = tone_frame
+
+        # Extra tools
+        extra_frame = tk.Frame(self.tools_container)
+        tk.Button(extra_frame, text="Detect Faces", command=self.detect_faces).pack(side="left", padx=5)
+        tk.Button(extra_frame, text="Reset", command=self.undo).pack(side="left", padx=5)
+        self.tool_frames["Extra"] = extra_frame
+
+        self.update_button_frame()
+        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+
+    def update_button_frame(self):
+        selected = self.option_var.get()
+        for frame in self.tool_frames.values():
+            frame.pack_forget()
+        self.tool_frames[selected].pack()
 
     def push_state(self):
         if self.image:
@@ -158,6 +212,14 @@ class PhotoEditor:
             ret, frame = cap.read()
             if not ret:
                 break
+
+            # Convert to grayscale for face detection
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
+
+            # Draw rectangles around detected faces
+            for (x, y, w, h) in faces:
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 255, 255), 2)
 
             cv2.imshow("Press SPACE to capture", frame)
             key = cv2.waitKey(1)
@@ -294,6 +356,45 @@ class PhotoEditor:
             self.image = self.image.rotate(angle, expand=True)
             self.display_image()
 
+    def flip_horizontal(self):
+        if self.image:
+            self.push_state()
+            self.image = self.image.transpose(Image.FLIP_LEFT_RIGHT)
+            self.display_image()
+
+    def flip_vertical(self):
+        if self.image:
+            self.push_state()
+            self.image = self.image.transpose(Image.FLIP_TOP_BOTTOM)
+            self.display_image()
+
+    def adjust_brightness(self, factor):
+        if self.image:
+            self.push_state()
+            enhancer = ImageEnhance.Brightness(self.image)
+            self.image = enhancer.enhance(factor)
+            self.display_image()
+
+    def adjust_contrast(self, factor):
+        if self.image:
+            self.push_state()
+            enhancer = ImageEnhance.Contrast(self.image)
+            self.image = enhancer.enhance(factor)
+            self.display_image()
+
+    def detect_faces(self):
+        if self.image:
+            img_cv = cv2.cvtColor(np.array(self.image), cv2.COLOR_RGB2BGR)
+            gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+            faces = self.face_cascade.detectMultiScale(gray, 1.1, 4)
+
+            for (x, y, w, h) in faces:
+                cv2.rectangle(img_cv, (x, y), (x + w, y + h), (255, 0, 0), 2)
+
+            self.push_state()
+            self.image = Image.fromarray(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
+            self.display_image()
+
     def save_image(self):
         if self.image:
             save_path = filedialog.asksaveasfilename(defaultextension=".jpg",
@@ -329,3 +430,4 @@ if __name__ == "__main__":
 # DISABLE BUTTONS IF NO IMAGE??
 # BUTTON TO ENABLE CROPPING?
 # IMPROVE SIZING OF CANVAS -> DYNAMICALLY??
+# MOUSEWHEEL ZOOM??
