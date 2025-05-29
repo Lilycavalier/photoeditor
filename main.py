@@ -3,6 +3,7 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk, ImageEnhance, ImageFilter, ImageOps
 import cv2
 import os
+import numpy
 
 
 #-----------------------------
@@ -105,7 +106,7 @@ class PhotoEditor:
         if os.path.exists("last_session_image.jpg"):
             self.image = Image.open("last_session_image.jpg")
             self.push_state()
-            self.display_image()
+            self.root.after(100, self.display_image)
 
         # Radiobuttons
         category_frame = tk.Frame(root)
@@ -148,12 +149,18 @@ class PhotoEditor:
 
         # Tone adjustments
         tone_frame = tk.Frame(self.tools_container)
-        tk.Button(tone_frame, text="Brightness +", command=lambda: self.adjust_brightness(1.2)).pack(side="left",
-                                                                                                     padx=5)
-        tk.Button(tone_frame, text="Brightness -", command=lambda: self.adjust_brightness(0.8)).pack(side="left",
-                                                                                                     padx=5)
-        tk.Button(tone_frame, text="Contrast +", command=lambda: self.adjust_contrast(1.2)).pack(side="left", padx=5)
-        tk.Button(tone_frame, text="Contrast -", command=lambda: self.adjust_contrast(0.8)).pack(side="left", padx=5)
+
+        # Brightness slider
+        tk.Label(tone_frame, text="Brightness").pack(side="top", pady=2)
+        self.brightness_slider = ttk.Scale(tone_frame, from_=0.5, to=1.5, orient='horizontal', value=1.0,
+                                           command=self.on_brightness_change)
+        self.brightness_slider.pack(side="top", fill="x", padx=10)
+
+        # Contrast slider
+        tk.Label(tone_frame, text="Contrast").pack(side="top", pady=2)
+        self.contrast_slider = ttk.Scale(tone_frame, from_=0.5, to=1.5, orient='horizontal', value=1.0,
+                                         command=self.on_contrast_change)
+        self.contrast_slider.pack(side="top", fill="x", padx=10)
         self.tool_frames["Tone"] = tone_frame
 
         # Extra tools
@@ -182,13 +189,18 @@ class PhotoEditor:
         messagebox.showinfo("About", "Simple Photo Editor\nCreated with Tkinter and Pillow.")
 
     def open_image(self):
+        self.brightness_slider.set(1.0)
+        self.contrast_slider.set(1.0)
         path = filedialog.askopenfilename(filetypes=[("Image files", "*.png *.jpg *.jpeg")])
         if path:
             self.image = Image.open(path)
             self.push_state()
+            self.original_image = self.image.copy()
             self.display_image()
 
     def capture_photo(self):
+        self.brightness_slider.set(1.0)
+        self.contrast_slider.set(1.0)
         loading_win = tk.Toplevel()
         loading_win.title("Loading")
         loading_win.geometry("200x100")
@@ -235,6 +247,7 @@ class PhotoEditor:
                     self.image = img.copy()
                 os.remove("captured_webcam_image.jpg")  # delete immediately after loading
                 self.push_state()
+                self.original_image = self.image.copy()
                 self.display_image()
                 return
 
@@ -368,23 +381,31 @@ class PhotoEditor:
             self.image = self.image.transpose(Image.FLIP_TOP_BOTTOM)
             self.display_image()
 
-    def adjust_brightness(self, factor):
-        if self.image:
+    def on_brightness_change(self, val):
+        if self.original_image:
             self.push_state()
-            enhancer = ImageEnhance.Brightness(self.image)
-            self.image = enhancer.enhance(factor)
+            brightness = float(val)
+            img = ImageEnhance.Brightness(self.original_image).enhance(brightness)
+            # Also apply contrast from current slider
+            contrast = float(self.contrast_slider.get())
+            img = ImageEnhance.Contrast(img).enhance(contrast)
+            self.image = img
             self.display_image()
 
-    def adjust_contrast(self, factor):
-        if self.image:
+    def on_contrast_change(self, val):
+        if self.original_image:
             self.push_state()
-            enhancer = ImageEnhance.Contrast(self.image)
-            self.image = enhancer.enhance(factor)
+            contrast = float(val)
+            img = ImageEnhance.Contrast(self.original_image).enhance(contrast)
+            # Also apply brightness from current slider
+            brightness = float(self.brightness_slider.get())
+            img = ImageEnhance.Brightness(img).enhance(brightness)
+            self.image = img
             self.display_image()
 
     def detect_faces(self):
         if self.image:
-            img_cv = cv2.cvtColor(np.array(self.image), cv2.COLOR_RGB2BGR)
+            img_cv = cv2.cvtColor(numpy.array(self.image), cv2.COLOR_RGB2BGR)
             gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
             faces = self.face_cascade.detectMultiScale(gray, 1.1, 4)
 
@@ -426,8 +447,7 @@ if __name__ == "__main__":
 
 
 # FACE RECOGNITION??
-# DIFFERENT MENUS BASED ON COMBOBOX SELECTION??
+# MOUSEWHEEL ZOOM??
 # DISABLE BUTTONS IF NO IMAGE??
 # BUTTON TO ENABLE CROPPING?
 # IMPROVE SIZING OF CANVAS -> DYNAMICALLY??
-# MOUSEWHEEL ZOOM??
