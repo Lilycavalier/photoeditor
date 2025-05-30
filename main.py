@@ -87,6 +87,7 @@ class PhotoEditor:
         # Set the menu bar
         self.root.config(menu=menubar)
         self.image = None
+        # self.adjustment_base_image = None  # Used to preserve original state for brightness/contrast adjustments
         self.tk_image = None
         self.canvas_image_id = None
         self.image_stack = []
@@ -101,12 +102,6 @@ class PhotoEditor:
         self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_mouse_release)
         ToolTip(self.canvas, "Drag your mouse to crop the image")
-
-        # Load last session image
-        if os.path.exists("last_session_image.jpg"):
-            self.image = Image.open("last_session_image.jpg")
-            self.push_state()
-            self.root.after(100, self.display_image)
 
         # Radiobuttons
         category_frame = tk.Frame(root)
@@ -152,15 +147,20 @@ class PhotoEditor:
 
         # Brightness slider
         tk.Label(tone_frame, text="Brightness").pack(side="top", pady=2)
-        self.brightness_slider = ttk.Scale(tone_frame, from_=0.5, to=1.5, orient='horizontal', value=1.0,
-                                           command=self.on_brightness_change)
+        self.brightness_slider = ttk.Scale(tone_frame, from_=0.5, to=1.5, orient='horizontal', value=1.0)
         self.brightness_slider.pack(side="top", fill="x", padx=10)
 
         # Contrast slider
         tk.Label(tone_frame, text="Contrast").pack(side="top", pady=2)
-        self.contrast_slider = ttk.Scale(tone_frame, from_=0.5, to=1.5, orient='horizontal', value=1.0,
-                                         command=self.on_contrast_change)
+        self.contrast_slider = ttk.Scale(tone_frame, from_=0.5, to=1.5, orient='horizontal', value=1.0)
         self.contrast_slider.pack(side="top", fill="x", padx=10)
+
+        # Bind same update logic
+        self.brightness_slider.config(command=self.preview_tone_adjustments)
+        self.contrast_slider.config(command=self.preview_tone_adjustments)
+        self.brightness_slider.bind("<ButtonPress-1>", self.prepare_for_tone_adjustment)
+        self.contrast_slider.bind("<ButtonPress-1>", self.prepare_for_tone_adjustment)
+
         self.tool_frames["Tone"] = tone_frame
 
         # Extra tools
@@ -168,6 +168,15 @@ class PhotoEditor:
         tk.Button(extra_frame, text="Detect Faces", command=self.detect_faces).pack(side="left", padx=5)
         tk.Button(extra_frame, text="Reset", command=self.undo).pack(side="left", padx=5)
         self.tool_frames["Extra"] = extra_frame
+
+        # Load last session image
+        if os.path.exists("last_session_image.jpg"):
+            self.image = Image.open("last_session_image.jpg")
+            self.original_image = self.image.copy()
+            self.brightness_slider.set(1.0)
+            self.contrast_slider.set(1.0)
+            self.push_state()
+            self.root.after(100, self.display_image)
 
         self.update_button_frame()
         self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
@@ -180,10 +189,45 @@ class PhotoEditor:
 
     def push_state(self):
         if self.image:
-            self.image_stack.append(self.image.copy())
-            if len(self.image_stack) > 20:  # Keep only the last 20 edits
+            state = {
+                "image": self.image.copy(),
+                "brightness": self.brightness_slider.get(),
+                "contrast": self.contrast_slider.get()
+            }
+            self.image_stack.append(state)
+            if len(self.image_stack) > 20:
                 self.image_stack.pop(0)
             self.redo_stack.clear()
+
+    def undo(self):
+        if self.image_stack:
+            current_state = {
+                "image": self.image.copy(),
+                "brightness": self.brightness_slider.get(),
+                "contrast": self.contrast_slider.get()
+            }
+            self.redo_stack.append(current_state)
+
+            last_state = self.image_stack.pop()
+            self.image = last_state["image"]
+            self.brightness_slider.set(last_state["brightness"])
+            self.contrast_slider.set(last_state["contrast"])
+            self.display_image()
+
+    def redo(self):
+        if self.redo_stack:
+            current_state = {
+                "image": self.image.copy(),
+                "brightness": self.brightness_slider.get(),
+                "contrast": self.contrast_slider.get()
+            }
+            self.image_stack.append(current_state)
+
+            next_state = self.redo_stack.pop()
+            self.image = next_state["image"]
+            self.brightness_slider.set(next_state["brightness"])
+            self.contrast_slider.set(next_state["contrast"])
+            self.display_image()
 
     def show_about(self):
         messagebox.showinfo("About", "Simple Photo Editor\nCreated with Tkinter and Pillow.")
@@ -278,19 +322,7 @@ class PhotoEditor:
             y_center = canvas_height // 2
             self.canvas_image_id = self.canvas.create_image(x_center, y_center, image=self.tk_image)
 
-    def undo(self):
-        if self.image_stack:
-            self.redo_stack.append(self.image.copy())
-            self.image = self.image_stack.pop()
-            self.display_image()
-
-    def redo(self):
-        if self.redo_stack:
-            self.image_stack.append(self.image.copy())  # Manual push to undo stack
-            self.image = self.redo_stack.pop()
-            self.display_image()
-        else:
-            print("Nothing to redo.")
+    # cropping utility functions
 
     def on_mouse_press(self, event):
         self.start_x = event.x
@@ -324,6 +356,28 @@ class PhotoEditor:
                 self.push_state()
                 self.image = self.image.crop((left, upper, right, lower))
                 self.display_image()
+
+    # transforming functions
+
+    def rotate_image(self, angle):
+        if self.image:
+            self.push_state()  # Add this line
+            self.image = self.image.rotate(angle, expand=True)
+            self.display_image()
+
+    def flip_horizontal(self):
+        if self.image:
+            self.push_state()
+            self.image = self.image.transpose(Image.FLIP_LEFT_RIGHT)
+            self.display_image()
+
+    def flip_vertical(self):
+        if self.image:
+            self.push_state()
+            self.image = self.image.transpose(Image.FLIP_TOP_BOTTOM)
+            self.display_image()
+
+    # filter functions
 
     def apply_grayscale(self):
         if self.image:
@@ -360,48 +414,27 @@ class PhotoEditor:
     def apply_blur(self):
         if self.image:
             self.push_state()
-            self.image = self.image.filter(ImageFilter.GaussianBlur(2))
+            self.image = self.image.filter(ImageFilter.GaussianBlur(10))
             self.display_image()
 
-    def rotate_image(self, angle):
-        if self.image:
-            self.push_state()  # Add this line
-            self.image = self.image.rotate(angle, expand=True)
-            self.display_image()
+    # tone functions
 
-    def flip_horizontal(self):
+    def prepare_for_tone_adjustment(self, event=None):
         if self.image:
             self.push_state()
-            self.image = self.image.transpose(Image.FLIP_LEFT_RIGHT)
-            self.display_image()
 
-    def flip_vertical(self):
+    def preview_tone_adjustments(self, event=None):
         if self.image:
-            self.push_state()
-            self.image = self.image.transpose(Image.FLIP_TOP_BOTTOM)
-            self.display_image()
-
-    def on_brightness_change(self, val):
-        if self.original_image:
-            self.push_state()
-            brightness = float(val)
-            img = ImageEnhance.Brightness(self.original_image).enhance(brightness)
-            # Also apply contrast from current slider
-            contrast = float(self.contrast_slider.get())
-            img = ImageEnhance.Contrast(img).enhance(contrast)
-            self.image = img
-            self.display_image()
-
-    def on_contrast_change(self, val):
-        if self.original_image:
-            self.push_state()
-            contrast = float(val)
-            img = ImageEnhance.Contrast(self.original_image).enhance(contrast)
-            # Also apply brightness from current slider
             brightness = float(self.brightness_slider.get())
-            img = ImageEnhance.Brightness(img).enhance(brightness)
+            contrast = float(self.contrast_slider.get())
+
+            img = ImageEnhance.Brightness(self.original_image).enhance(brightness)
+            img = ImageEnhance.Contrast(img).enhance(contrast)
+
             self.image = img
             self.display_image()
+
+    # extra functions
 
     def detect_faces(self):
         if self.image:
@@ -415,6 +448,8 @@ class PhotoEditor:
             self.push_state()
             self.image = Image.fromarray(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
             self.display_image()
+
+    # save & exit functions
 
     def save_image(self):
         if self.image:
@@ -447,8 +482,6 @@ if __name__ == "__main__":
 
 
 # FACE RECOGNITION??
-# MOUSEWHEEL ZOOM??
 # DISABLE BUTTONS IF NO IMAGE??
 # BUTTON TO ENABLE CROPPING?
 # IMPROVE SIZING OF CANVAS -> DYNAMICALLY??
-# NOOOO
