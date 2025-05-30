@@ -103,6 +103,9 @@ class PhotoEditor:
         self.canvas.bind("<ButtonRelease-1>", self.on_mouse_release)
         ToolTip(self.canvas, "Drag your mouse to crop the image")
 
+        self.pending_crop_box = None
+        self.crop_overlay_ids = []
+
         # Radiobuttons
         category_frame = tk.Frame(root)
         category_frame.pack(fill='x')
@@ -129,9 +132,24 @@ class PhotoEditor:
 
         # Transform tools
         transform_frame = tk.Frame(self.tools_container)
-        tk.Button(transform_frame, text="Rotate", command=lambda: self.rotate_image(90)).pack(side="left", padx=5)
-        tk.Button(transform_frame, text="Flip Horizontal", command=self.flip_horizontal).pack(side="left", padx=5)
-        tk.Button(transform_frame, text="Flip Vertical", command=self.flip_vertical).pack(side="left", padx=5)
+        button_row = tk.Frame(transform_frame)
+        tk.Button(button_row, text="Rotate", command=lambda: self.rotate_image(90)).pack(side="left", padx=5)
+        tk.Button(button_row, text="Flip Horizontal", command=self.flip_horizontal).pack(side="left", padx=5)
+        tk.Button(button_row, text="Flip Vertical", command=self.flip_vertical).pack(side="left", padx=5)
+        button_row.pack(pady=(0, 10))
+        self.crop_controls = tk.Frame(transform_frame)
+        tk.Button(self.crop_controls, text="Apply Crop", command=self.apply_crop).pack(side="left", padx=5)
+        tk.Button(self.crop_controls, text="Cancel Crop", command=self.cancel_crop).pack(side="left", padx=5)
+        self.crop_controls.pack_forget()
+
+        # Aspect ratio lock options
+        ratio_frame = tk.Frame(transform_frame)
+        tk.Label(ratio_frame, text="Aspect Ratio:").pack(side="left")
+        self.aspect_ratio_var = tk.StringVar(value="Free")
+        for label in ["Free", "1:1", "4:3", "16:9"]:
+            tk.Radiobutton(ratio_frame, text=label, variable=self.aspect_ratio_var, value=label).pack(side="left")
+        ratio_frame.pack(pady=(0, 10))
+
         self.tool_frames["Transform"] = transform_frame
 
         # Filters
@@ -171,12 +189,13 @@ class PhotoEditor:
 
         # Load last session image
         if os.path.exists("last_session_image.jpg"):
-            self.image = Image.open("last_session_image.jpg")
-            self.original_image = self.image.copy()
-            self.brightness_slider.set(1.0)
-            self.contrast_slider.set(1.0)
-            self.push_state()
-            self.root.after(100, self.display_image)
+            if messagebox.askyesno("Load image", "Do you want to load the image from the last session?"):
+                self.image = Image.open("last_session_image.jpg")
+                self.original_image = self.image.copy()
+                self.brightness_slider.set(1.0)
+                self.contrast_slider.set(1.0)
+                self.push_state()
+                self.root.after(100, self.display_image)
 
         self.update_button_frame()
         self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
@@ -193,6 +212,7 @@ class PhotoEditor:
                 "image": self.image.copy(),
                 "brightness": self.brightness_slider.get(),
                 "contrast": self.contrast_slider.get()
+                # add rotation and flip to make even better
             }
             self.image_stack.append(state)
             if len(self.image_stack) > 20:
@@ -322,6 +342,16 @@ class PhotoEditor:
             y_center = canvas_height // 2
             self.canvas_image_id = self.canvas.create_image(x_center, y_center, image=self.tk_image)
 
+            # Store coordinates of image on canvas for cropping
+            self.displayed_image_info = {
+                "x": x_center - new_size[0] // 2,
+                "y": y_center - new_size[1] // 2,
+                "width": new_size[0],
+                "height": new_size[1],
+                "scale_x": self.image.size[0] / new_size[0],
+                "scale_y": self.image.size[1] / new_size[1]
+            }
+
     # cropping utility functions
 
     def on_mouse_press(self, event):
@@ -329,39 +359,116 @@ class PhotoEditor:
         self.start_y = event.y
         if self.rect_id:
             self.canvas.delete(self.rect_id)
-        self.rect_id = self.canvas.create_rectangle(self.start_x, self.start_y, self.start_x, self.start_y, outline='red')
+        self.rect_id = self.canvas.create_rectangle(self.start_x, self.start_y, self.start_x, self.start_y, outline='black')
 
     def on_mouse_drag(self, event):
+        end_x = event.x
+        end_y = event.y
+
+        # Aspect ratio lock logic
+        ar = self.aspect_ratio_var.get()
+        dx = end_x - self.start_x
+        dy = end_y - self.start_y
+
+        if ar != "Free":
+            abs_dx, abs_dy = abs(dx), abs(dy)
+
+            if ar == "1:1":
+                side = min(abs_dx, abs_dy)
+                end_x = self.start_x + side if dx >= 0 else self.start_x - side
+                end_y = self.start_y + side if dy >= 0 else self.start_y - side
+            elif ar == "4:3":
+                ratio = 4 / 3
+                if abs_dx > abs_dy:
+                    end_y = self.start_y + (abs_dx / ratio if dy >= 0 else -abs_dx / ratio)
+                else:
+                    end_x = self.start_x + (abs_dy * ratio if dx >= 0 else -abs_dy * ratio)
+            elif ar == "16:9":
+                ratio = 16 / 9
+                if abs_dx > abs_dy:
+                    end_y = self.start_y + (abs_dx / ratio if dy >= 0 else -abs_dx / ratio)
+                else:
+                    end_x = self.start_x + (abs_dy * ratio if dx >= 0 else -abs_dy * ratio)
+
+        # Draw the main crop rectangle
         if self.rect_id:
-            self.canvas.coords(self.rect_id, self.start_x, self.start_y, event.x, event.y)
+            self.canvas.coords(self.rect_id, self.start_x, self.start_y, end_x, end_y)
+
+            # Remove old overlays
+            for oid in self.crop_overlay_ids:
+                self.canvas.delete(oid)
+            self.crop_overlay_ids.clear()
+
+            # Add new overlay rectangles
+            x1, y1 = min(self.start_x, end_x), min(self.start_y, end_y)
+            x2, y2 = max(self.start_x, end_x), max(self.start_y, end_y)
+            w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
+
+            self.crop_overlay_ids.extend([
+                self.canvas.create_rectangle(0, 0, w, y1, fill="black", stipple="gray25", width=0),
+                self.canvas.create_rectangle(0, y1, x1, y2, fill="black", stipple="gray25", width=0),
+                self.canvas.create_rectangle(x2, y1, w, y2, fill="black", stipple="gray25", width=0),
+                self.canvas.create_rectangle(0, y2, w, h, fill="black", stipple="gray25", width=0)
+            ])
 
     def on_mouse_release(self, event):
         if self.image and self.rect_id:
             bbox = self.canvas.bbox(self.rect_id)
+            # Keep the black crop rectangle visible — do not delete it here
+
+            # Keep overlay visible — do not delete yet
+
+            if not bbox or bbox[2] - bbox[0] < 10 or bbox[3] - bbox[1] < 10:
+                return
+
+            # Limit to image area on canvas
+            info = self.displayed_image_info
+            x1 = max(bbox[0], info["x"])
+            y1 = max(bbox[1], info["y"])
+            x2 = min(bbox[2], info["x"] + info["width"])
+            y2 = min(bbox[3], info["y"] + info["height"])
+
+            # Convert canvas to image coordinates
+            left = int((x1 - info["x"]) * info["scale_x"])
+            upper = int((y1 - info["y"]) * info["scale_y"])
+            right = int((x2 - info["x"]) * info["scale_x"])
+            lower = int((y2 - info["y"]) * info["scale_y"])
+
+            if right - left > 10 and lower - upper > 10:
+                self.pending_crop_box = (left, upper, right, lower)
+                self.crop_controls.pack(pady=2)
+
+    def apply_crop(self):
+        if self.pending_crop_box:
+            self.push_state()
+            self.image = self.image.crop(self.pending_crop_box)
+            self.pending_crop_box = None
+            self.crop_controls.pack_forget()
+            self.display_image()
+            # Remove overlay artifacts
+            self.clear_crop_overlay()
+
+    def cancel_crop(self):
+        self.pending_crop_box = None
+        self.crop_controls.pack_forget()
+        self.display_image()
+        # Remove overlay artifacts
+        self.clear_crop_overlay()
+
+    def clear_crop_overlay(self):
+        for oid in self.crop_overlay_ids:
+            self.canvas.delete(oid)
+        self.crop_overlay_ids.clear()
+
+        if self.rect_id:
             self.canvas.delete(self.rect_id)
             self.rect_id = None
-
-            if bbox and bbox[2] - bbox[0] > 10 and bbox[3] - bbox[1] > 10:
-                img_width, img_height = self.image.size
-                canvas_width = 600
-                canvas_height = 400
-                scale_x = img_width / canvas_width
-                scale_y = img_height / canvas_height
-
-                left = int(bbox[0] * scale_x)
-                upper = int(bbox[1] * scale_y)
-                right = int(bbox[2] * scale_x)
-                lower = int(bbox[3] * scale_y)
-
-                self.push_state()
-                self.image = self.image.crop((left, upper, right, lower))
-                self.display_image()
 
     # transforming functions
 
     def rotate_image(self, angle):
         if self.image:
-            self.push_state()  # Add this line
+            self.push_state()
             self.image = self.image.rotate(angle, expand=True)
             self.display_image()
 
@@ -408,6 +515,8 @@ class PhotoEditor:
     def apply_invert(self):
         if self.image:
             self.push_state()
+            if self.image.mode != 'RGB':
+                self.image = self.image.convert('RGB')
             self.image = ImageOps.invert(self.image)
             self.display_image()
 
@@ -483,5 +592,5 @@ if __name__ == "__main__":
 
 # FACE RECOGNITION??
 # DISABLE BUTTONS IF NO IMAGE??
-# BUTTON TO ENABLE CROPPING?
+# APPLYING FILTER AGAIN RETURNS TO ORIGINAL
 # IMPROVE SIZING OF CANVAS -> DYNAMICALLY??
