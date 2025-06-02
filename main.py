@@ -87,7 +87,6 @@ class PhotoEditor:
         # Set the menu bar
         self.root.config(menu=menubar)
         self.image = None
-        # self.adjustment_base_image = None  # Used to preserve original state for brightness/contrast adjustments
         self.tk_image = None
         self.canvas_image_id = None
         self.image_stack = []
@@ -115,10 +114,13 @@ class PhotoEditor:
 
         # Radiobuttons for categories
         self.option_var = tk.StringVar(value="Transform")
+        self.category_buttons = []
+
         for cat in ["Transform", "Filters", "Tone", "Extra"]:
             rb = tk.Radiobutton(button_container, text=cat, variable=self.option_var, value=cat,
                                 command=self.update_button_frame)
             rb.pack(side="left", padx=10)
+            self.category_buttons.append(rb)
 
         # Add a horizontal separator
         separator = ttk.Separator(root, orient='horizontal')
@@ -154,11 +156,34 @@ class PhotoEditor:
 
         # Filters
         filters_frame = tk.Frame(self.tools_container)
-        tk.Button(filters_frame, text="Grayscale", command=self.apply_grayscale).pack(side="left", padx=5)
-        tk.Button(filters_frame, text="Sepia", command=self.apply_sepia).pack(side="left", padx=5)
-        tk.Button(filters_frame, text="Invert", command=self.apply_invert).pack(side="left", padx=5)
-        tk.Button(filters_frame, text="Blur", command=self.apply_blur).pack(side="left", padx=5)
+
+        self.filter_buttons = {}
+
+        self.filter_buttons["grayscale"] = tk.Button(filters_frame, text="Grayscale", command=self.apply_grayscale)
+        self.filter_buttons["grayscale"].config(bg="light gray", fg="black")
+        self.filter_buttons["grayscale"].pack(side="left", padx=5)
+
+        self.filter_buttons["sepia"] = tk.Button(filters_frame, text="Sepia", command=self.apply_sepia)
+        self.filter_buttons["sepia"].config(bg="light gray", fg="black")
+        self.filter_buttons["sepia"].pack(side="left", padx=5)
+
+        self.filter_buttons["invert"] = tk.Button(filters_frame, text="Invert", command=self.apply_invert)
+        self.filter_buttons["invert"].config(bg="light gray", fg="black")
+        self.filter_buttons["invert"].pack(side="left", padx=5)
+
+        self.filter_buttons["blur"] = tk.Button(filters_frame, text="Blur", command=self.apply_blur)
+        self.filter_buttons["blur"].config(bg="light gray", fg="black")
+        self.filter_buttons["blur"].pack(side="left", padx=5)
+
         self.tool_frames["Filters"] = filters_frame
+
+        # Track filter toggle states
+        self.filter_states = {
+            "grayscale": False,
+            "sepia": False,
+            "invert": False,
+            "blur": False
+        }
 
         # Tone adjustments
         tone_frame = tk.Frame(self.tools_container)
@@ -196,6 +221,13 @@ class PhotoEditor:
                 self.contrast_slider.set(1.0)
                 self.push_state()
                 self.root.after(100, self.display_image)
+                self.set_category_buttons_state("normal")
+                self.set_all_controls_state("normal")
+            else:
+                self.set_category_buttons_state("disabled")
+                self.set_all_controls_state("disabled")
+                self.canvas.create_text(300, 200, text="Load or capture an image to begin.", fill="white",
+                                        font=("Arial", 16))
 
         self.update_button_frame()
         self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
@@ -205,6 +237,21 @@ class PhotoEditor:
         for frame in self.tool_frames.values():
             frame.pack_forget()
         self.tool_frames[selected].pack()
+
+    def set_category_buttons_state(self, state):
+        for btn in self.category_buttons:
+            btn.config(state=state)
+
+    def set_state_recursive(self, widget, state):
+        for child in widget.winfo_children():
+            if isinstance(child, (tk.Button, ttk.Scale, tk.Radiobutton)):
+                child.config(state=state)
+            # recurse deeper
+            self.set_state_recursive(child, state)
+
+    def set_all_controls_state(self, state):
+        for frame in self.tool_frames.values():
+            self.set_state_recursive(frame, state)
 
     def push_state(self):
         if self.image:
@@ -261,6 +308,8 @@ class PhotoEditor:
             self.push_state()
             self.original_image = self.image.copy()
             self.display_image()
+            self.set_category_buttons_state("normal")
+            self.set_all_controls_state("normal")
 
     def capture_photo(self):
         self.brightness_slider.set(1.0)
@@ -313,6 +362,8 @@ class PhotoEditor:
                 self.push_state()
                 self.original_image = self.image.copy()
                 self.display_image()
+                self.set_category_buttons_state("normal")
+                self.set_all_controls_state("normal")
                 return
 
     def display_image(self):
@@ -487,44 +538,62 @@ class PhotoEditor:
     # filter functions
 
     def apply_grayscale(self):
-        if self.image:
-            self.push_state()
-            self.image = self.image.convert("L").convert("RGB")
-            self.display_image()
+        self.filter_states["grayscale"] = not self.filter_states["grayscale"]
+        self.update_filter_button_colors()
+        self.update_filtered_image()
 
     def apply_sepia(self):
-        if self.image:
-            self.push_state()
-            img = self.image.convert("RGB")
-            width, height = img.size
-            pixels = img.load()  # create the pixel map
+        self.filter_states["sepia"] = not self.filter_states["sepia"]
+        self.update_filter_button_colors()
+        self.update_filtered_image()
 
-            for py in range(height):
-                for px in range(width):
+    def apply_invert(self):
+        self.filter_states["invert"] = not self.filter_states["invert"]
+        self.update_filter_button_colors()
+        self.update_filtered_image()
+
+    def apply_blur(self):
+        self.filter_states["blur"] = not self.filter_states["blur"]
+        self.update_filter_button_colors()
+        self.update_filtered_image()
+
+    def update_filter_button_colors(self):
+        for name, button in self.filter_buttons.items():
+            if self.filter_states.get(name):
+                button.config(bg="white", fg="black")
+            else:
+                button.config(bg="light gray", fg="black")
+
+    def update_filtered_image(self):
+        if not hasattr(self, 'original_image') or self.original_image is None:
+            return
+
+        self.push_state()
+        img = self.original_image.copy()
+
+        if self.filter_states["grayscale"]:
+            img = img.convert("L").convert("RGB")
+
+        if self.filter_states["sepia"]:
+            pixels = img.load()
+            for py in range(img.size[1]):
+                for px in range(img.size[0]):
                     r, g, b = pixels[px, py]
-
                     tr = int(0.393 * r + 0.769 * g + 0.189 * b)
                     tg = int(0.349 * r + 0.686 * g + 0.168 * b)
                     tb = int(0.272 * r + 0.534 * g + 0.131 * b)
-
                     pixels[px, py] = (min(255, tr), min(255, tg), min(255, tb))
 
-            self.image = img
-            self.display_image()
+        if self.filter_states["invert"]:
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            img = ImageOps.invert(img)
 
-    def apply_invert(self):
-        if self.image:
-            self.push_state()
-            if self.image.mode != 'RGB':
-                self.image = self.image.convert('RGB')
-            self.image = ImageOps.invert(self.image)
-            self.display_image()
+        if self.filter_states["blur"]:
+            img = img.filter(ImageFilter.GaussianBlur(10))
 
-    def apply_blur(self):
-        if self.image:
-            self.push_state()
-            self.image = self.image.filter(ImageFilter.GaussianBlur(10))
-            self.display_image()
+        self.image = img
+        self.display_image()
 
     # tone functions
 
@@ -591,6 +660,7 @@ if __name__ == "__main__":
 
 
 # FACE RECOGNITION??
-# DISABLE BUTTONS IF NO IMAGE??
+# DISABLE CROPPING IF NO IMAGE??
+# DELETE DETECT FACES?!
 # APPLYING FILTER AGAIN RETURNS TO ORIGINAL
 # IMPROVE SIZING OF CANVAS -> DYNAMICALLY??
