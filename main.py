@@ -113,6 +113,8 @@ class PhotoEditor:
         self.canvas.bind("<ButtonPress-1>", self.on_mouse_press)
         self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_mouse_release)
+        self.canvas.bind("<Button-1>", self.on_canvas_click)
+
         self.canvas_tooltip = ToolTip(self.canvas, "Drag your mouse to crop the image")
 
         # Bind zoom to mousewheel
@@ -122,6 +124,18 @@ class PhotoEditor:
 
         self.pending_crop_box = None
         self.crop_overlay_ids = []
+
+        # Drawing attributes
+        self.drawing_enabled = False
+        self.last_draw_pos = None
+        self.brush_size = 3
+        self.brush_color = "black"
+
+        # Text attributes
+        self.text_mode = False
+        self.text_font_size = 20
+        self.text_color = "black"
+        self.text_overlay = None  # To hold the current text input widget temporarily
 
         # Radiobuttons
         category_frame = tk.Frame(root)
@@ -226,8 +240,23 @@ class PhotoEditor:
 
         # Extra tools
         extra_frame = tk.Frame(self.tools_container)
-        tk.Button(extra_frame, text="Detect Faces", command=self.detect_faces).pack(side="left", padx=5)
-        tk.Button(extra_frame, text="Reset", command=self.undo).pack(side="left", padx=5)
+        # Add drawing toggle button
+        tk.Button(extra_frame, text="Toggle Drawing", command=self.toggle_drawing).pack(side="left", padx=5)
+        # Brush size slider
+        tk.Label(extra_frame, text="Brush Size:").pack(side="left", padx=5)
+        self.brush_slider = ttk.Scale(extra_frame, from_=1, to=20, orient='horizontal', command=self.update_brush_size)
+        self.brush_slider.set(self.brush_size)
+        self.brush_slider.pack(side="left", padx=5)
+        # Add text overlay button
+        tk.Button(extra_frame, text="Add Text", command=self.activate_text_mode).pack(side="left", padx=5)
+        # Font size spinbox
+        tk.Label(extra_frame, text="Font Size:").pack(side="left", padx=5)
+        self.font_size_var = tk.IntVar(value=self.text_font_size)
+        tk.Spinbox(extra_frame, from_=8, to=72, textvariable=self.font_size_var, width=5).pack(side="left", padx=5)
+        # Text color entry
+        tk.Label(extra_frame, text="Text Color:").pack(side="left", padx=5)
+        self.text_color_var = tk.StringVar(value=self.text_color)
+        tk.Entry(extra_frame, textvariable=self.text_color_var, width=8).pack(side="left", padx=5)
         self.tool_frames["Extra"] = extra_frame
 
         # Load last session image
@@ -702,18 +731,105 @@ class PhotoEditor:
 
     # extra functions
 
-    def detect_faces(self):
-        if self.image:
-            img_cv = cv2.cvtColor(numpy.array(self.image), cv2.COLOR_RGB2BGR)
-            gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-            faces = self.face_cascade.detectMultiScale(gray, 1.1, 4)
+    def toggle_drawing(self):
+        self.drawing_enabled = not self.drawing_enabled
+        self.text_mode = False  # disable text mode if drawing enabled
+        self.last_draw_pos = None
+        if self.drawing_enabled:
+            self.canvas.config(cursor="pencil")
+        else:
+            self.canvas.config(cursor="arrow")
 
-            for (x, y, w, h) in faces:
-                cv2.rectangle(img_cv, (x, y), (x + w, y + h), (255, 0, 0), 2)
+    def update_brush_size(self, val):
+        self.brush_size = int(float(val))
 
-            self.push_state()
-            self.image = Image.fromarray(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
-            self.display_image()
+    def activate_text_mode(self):
+        self.text_mode = True
+        self.drawing_enabled = False
+        self.canvas.config(cursor="xterm")
+
+    def on_mouse_press(self, event):
+        if self.drawing_enabled:
+            self.last_draw_pos = (event.x, event.y)
+        else:
+            self.last_draw_pos = None
+
+    def on_mouse_drag(self, event):
+        if self.drawing_enabled and self.last_draw_pos:
+            x1, y1 = self.last_draw_pos
+            x2, y2 = event.x, event.y
+            # Draw line on canvas for preview
+            self.canvas.create_line(x1, y1, x2, y2,
+                                    width=self.brush_size,
+                                    fill=self.brush_color,
+                                    capstyle=tk.ROUND, smooth=True)
+            # Draw on the PIL image as well
+            draw = ImageDraw.Draw(self.image)
+            scale_x = self.image.size[0] / self.displayed_image_info["width"]
+            scale_y = self.image.size[1] / self.displayed_image_info["height"]
+
+            # Adjust coords relative to displayed image offset and scale
+            adj_x1 = int((x1 - self.displayed_image_info["x"]) * scale_x)
+            adj_y1 = int((y1 - self.displayed_image_info["y"]) * scale_y)
+            adj_x2 = int((x2 - self.displayed_image_info["x"]) * scale_x)
+            adj_y2 = int((y2 - self.displayed_image_info["y"]) * scale_y)
+
+            draw.line([adj_x1, adj_y1, adj_x2, adj_y2], fill=self.brush_color, width=self.brush_size)
+            self.last_draw_pos = (x2, y2)
+
+    def on_mouse_release(self, event):
+        if self.drawing_enabled:
+            self.push_state()  # save state after finishing a stroke
+            self.last_draw_pos = None
+
+    def on_canvas_click(self, event):
+        if self.text_mode:
+            # Remove previous overlay if any
+            if self.text_overlay:
+                self.text_overlay.destroy()
+                self.text_overlay = None
+
+            # Position text input box at click location
+            self.text_overlay = tk.Text(self.canvas, height=1, width=20,
+                                        font=("Arial", self.font_size_var.get()),
+                                        fg=self.text_color_var.get())
+            self.text_overlay.place(x=event.x, y=event.y)
+            self.text_overlay.focus_set()
+            self.text_overlay.bind("<Return>", self.finish_text_overlay)
+            self.text_overlay.bind("<Escape>", lambda e: self.text_overlay.destroy())
+
+    def finish_text_overlay(self, event):
+        text = self.text_overlay.get("1.0", "end-1c")
+        x, y = self.text_overlay.winfo_x(), self.text_overlay.winfo_y()
+        font_size = self.font_size_var.get()
+        color = self.text_color_var.get()
+
+        if text.strip():
+            # Draw text on canvas for preview
+            self.canvas.create_text(x, y, text=text, anchor="nw",
+                                    font=("Arial", font_size), fill=color)
+
+            # Draw text on PIL image (scaled coordinates)
+            draw = ImageDraw.Draw(self.image)
+            scale_x = self.image.size[0] / self.displayed_image_info["width"]
+            scale_y = self.image.size[1] / self.displayed_image_info["height"]
+            adj_x = int((x - self.displayed_image_info["x"]) * scale_x)
+            adj_y = int((y - self.displayed_image_info["y"]) * scale_y)
+
+            try:
+                from PIL import ImageFont
+                font = ImageFont.truetype("arial.ttf", font_size)
+            except:
+                font = None  # fallback if font not found
+
+            draw.text((adj_x, adj_y), text, font=font, fill=color)
+            self.push_state()  # save state after adding text
+
+        self.text_overlay.destroy()
+        self.text_overlay = None
+        self.text_mode = False
+        self.canvas.config(cursor="arrow")
+        return "break"
 
     # save & exit functions
 
