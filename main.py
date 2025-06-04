@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from PIL import Image, ImageTk, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image, ImageTk, ImageEnhance, ImageFilter, ImageOps, ImageDraw
 import cv2
 import os
 import numpy
@@ -113,7 +113,7 @@ class PhotoEditor:
         self.canvas.bind("<ButtonPress-1>", self.on_mouse_press)
         self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_mouse_release)
-        self.canvas.bind("<Button-1>", self.on_canvas_click)
+        # self.canvas.bind("<Button-1>", self.on_canvas_click)
 
         self.canvas_tooltip = ToolTip(self.canvas, "Drag your mouse to crop the image")
 
@@ -241,22 +241,27 @@ class PhotoEditor:
         # Extra tools
         extra_frame = tk.Frame(self.tools_container)
         # Add drawing toggle button
-        tk.Button(extra_frame, text="Toggle Drawing", command=self.toggle_drawing).pack(side="left", padx=5)
+        drawing_frame = tk.Frame(extra_frame)
+        ttk.Checkbutton(drawing_frame, text="Toggle Drawing", command=self.toggle_drawing).pack(side="left", padx=5)
         # Brush size slider
-        tk.Label(extra_frame, text="Brush Size:").pack(side="left", padx=5)
-        self.brush_slider = ttk.Scale(extra_frame, from_=1, to=20, orient='horizontal', command=self.update_brush_size)
+        tk.Label(drawing_frame, text="Brush Size:").pack(side="left", padx=5)
+        self.brush_slider = ttk.Scale(drawing_frame, from_=1, to=20, orient='horizontal', command=self.update_brush_size)
         self.brush_slider.set(self.brush_size)
         self.brush_slider.pack(side="left", padx=5)
+        drawing_frame.pack(pady=(0, 10))
+
         # Add text overlay button
-        tk.Button(extra_frame, text="Add Text", command=self.activate_text_mode).pack(side="left", padx=5)
+        text_frame = tk.Frame(extra_frame)
+        tk.Button(text_frame, text="Add Text", command=self.activate_text_mode).pack(side="left", padx=5)
         # Font size spinbox
-        tk.Label(extra_frame, text="Font Size:").pack(side="left", padx=5)
+        tk.Label(text_frame, text="Font Size:").pack(side="left", padx=5)
         self.font_size_var = tk.IntVar(value=self.text_font_size)
-        tk.Spinbox(extra_frame, from_=8, to=72, textvariable=self.font_size_var, width=5).pack(side="left", padx=5)
+        tk.Spinbox(text_frame, from_=8, to=72, textvariable=self.font_size_var, width=5).pack(side="left", padx=5)
         # Text color entry
-        tk.Label(extra_frame, text="Text Color:").pack(side="left", padx=5)
+        tk.Label(text_frame, text="Text Color:").pack(side="left", padx=5)
         self.text_color_var = tk.StringVar(value=self.text_color)
-        tk.Entry(extra_frame, textvariable=self.text_color_var, width=8).pack(side="left", padx=5)
+        tk.Entry(text_frame, textvariable=self.text_color_var, width=8).pack(side="left", padx=5)
+        text_frame.pack(pady=(0, 10))
         self.tool_frames["Extra"] = extra_frame
 
         # Load last session image
@@ -282,6 +287,10 @@ class PhotoEditor:
 
     def update_button_frame(self):
         selected = self.option_var.get()
+        if self.option_var.get() == "Transform":
+            self.canvas_tooltip.enable()
+        else:
+            self.canvas_tooltip.disable()
         for frame in self.tool_frames.values():
             frame.pack_forget()
         self.tool_frames[selected].pack()
@@ -517,70 +526,125 @@ class PhotoEditor:
     def on_mouse_press(self, event):
         if not self.image:
             return  # Do nothing if no image is loaded
+        if self.option_var.get() == "Transform":
+            # Cropping mode
+            self.start_x = event.x
+            self.start_y = event.y
 
-        self.start_x = event.x
-        self.start_y = event.y
-        if self.rect_id:
-            self.canvas.delete(self.rect_id)
-        self.rect_id = self.canvas.create_rectangle(self.start_x, self.start_y, self.start_x, self.start_y, outline='black')
+            # Remove existing crop rectangle
+            if self.rect_id:
+                self.canvas.delete(self.rect_id)
+                # self.rect_id = None
+            self.rect_id = self.canvas.create_rectangle(self.start_x, self.start_y, self.start_x, self.start_y,
+                                                        outline='black')
+        elif self.option_var.get() == "Extra" and self.drawing_enabled:
+            # Drawing mode
+            self.push_state()
+            self.last_draw_pos = (event.x, event.y)
+        elif self.option_var.get() == "Extra" and self.text_mode:
+            # Remove previous overlay if any
+            if self.text_overlay:
+                self.text_overlay.destroy()
+                self.text_overlay = None
+
+            try:
+                self.text_overlay = tk.Text(
+                    self.canvas,
+                    height=1,
+                    width=20,
+                    font=("Arial", self.font_size_var.get()),
+                    fg=self.text_color_var.get()
+                )
+                # Position text input box at click location
+                self.text_overlay.place(x=event.x, y=event.y)
+                self.text_overlay.focus_set()
+                self.text_overlay.bind("<Return>", self.finish_text_overlay)
+                self.text_overlay.bind("<Escape>", lambda e: self.text_overlay.destroy())
+            except tk.TclError:
+                # Show error message and reset to safe default color
+                messagebox.showerror("Invalid Color",
+                                     "The color you entered is not valid.\nPlease use a valid color name or hex code.")
+        else:
+            self.last_draw_pos = None
 
     def on_mouse_drag(self, event):
         if not self.image:
             return  # Do nothing if no image is loaded
+        if self.option_var.get() == "Transform":
+            end_x = event.x
+            end_y = event.y
 
-        end_x = event.x
-        end_y = event.y
+            # Aspect ratio lock logic
+            ar = self.aspect_ratio_var.get()
+            dx = end_x - self.start_x
+            dy = end_y - self.start_y
 
-        # Aspect ratio lock logic
-        ar = self.aspect_ratio_var.get()
-        dx = end_x - self.start_x
-        dy = end_y - self.start_y
+            if ar != "Free":
+                abs_dx, abs_dy = abs(dx), abs(dy)
 
-        if ar != "Free":
-            abs_dx, abs_dy = abs(dx), abs(dy)
+                if ar == "1:1":
+                    side = min(abs_dx, abs_dy)
+                    end_x = self.start_x + side if dx >= 0 else self.start_x - side
+                    end_y = self.start_y + side if dy >= 0 else self.start_y - side
+                elif ar == "4:3":
+                    ratio = 4 / 3
+                    if abs_dx > abs_dy:
+                        end_y = self.start_y + (abs_dx / ratio if dy >= 0 else -abs_dx / ratio)
+                    else:
+                        end_x = self.start_x + (abs_dy * ratio if dx >= 0 else -abs_dy * ratio)
+                elif ar == "16:9":
+                    ratio = 16 / 9
+                    if abs_dx > abs_dy:
+                        end_y = self.start_y + (abs_dx / ratio if dy >= 0 else -abs_dx / ratio)
+                    else:
+                        end_x = self.start_x + (abs_dy * ratio if dx >= 0 else -abs_dy * ratio)
 
-            if ar == "1:1":
-                side = min(abs_dx, abs_dy)
-                end_x = self.start_x + side if dx >= 0 else self.start_x - side
-                end_y = self.start_y + side if dy >= 0 else self.start_y - side
-            elif ar == "4:3":
-                ratio = 4 / 3
-                if abs_dx > abs_dy:
-                    end_y = self.start_y + (abs_dx / ratio if dy >= 0 else -abs_dx / ratio)
-                else:
-                    end_x = self.start_x + (abs_dy * ratio if dx >= 0 else -abs_dy * ratio)
-            elif ar == "16:9":
-                ratio = 16 / 9
-                if abs_dx > abs_dy:
-                    end_y = self.start_y + (abs_dx / ratio if dy >= 0 else -abs_dx / ratio)
-                else:
-                    end_x = self.start_x + (abs_dy * ratio if dx >= 0 else -abs_dy * ratio)
+            # Draw the main crop rectangle
+            if self.rect_id:
+                self.canvas.coords(self.rect_id, self.start_x, self.start_y, end_x, end_y)
 
-        # Draw the main crop rectangle
-        if self.rect_id:
-            self.canvas.coords(self.rect_id, self.start_x, self.start_y, end_x, end_y)
+                # Remove old overlays
+                for oid in self.crop_overlay_ids:
+                    self.canvas.delete(oid)
+                self.crop_overlay_ids.clear()
 
-            # Remove old overlays
-            for oid in self.crop_overlay_ids:
-                self.canvas.delete(oid)
-            self.crop_overlay_ids.clear()
+                # Add new overlay rectangles
+                x1, y1 = min(self.start_x, end_x), min(self.start_y, end_y)
+                x2, y2 = max(self.start_x, end_x), max(self.start_y, end_y)
+                w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
 
-            # Add new overlay rectangles
-            x1, y1 = min(self.start_x, end_x), min(self.start_y, end_y)
-            x2, y2 = max(self.start_x, end_x), max(self.start_y, end_y)
-            w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
+                self.crop_overlay_ids.extend([
+                    self.canvas.create_rectangle(0, 0, w, y1, fill="black", stipple="gray25", width=0),
+                    self.canvas.create_rectangle(0, y1, x1, y2, fill="black", stipple="gray25", width=0),
+                    self.canvas.create_rectangle(x2, y1, w, y2, fill="black", stipple="gray25", width=0),
+                    self.canvas.create_rectangle(0, y2, w, h, fill="black", stipple="gray25", width=0)
+                ])
+        elif self.option_var.get() == "Extra" and self.drawing_enabled and self.last_draw_pos:
+            x1, y1 = self.last_draw_pos
+            x2, y2 = event.x, event.y
+            # Draw line on canvas for preview
+            self.canvas.create_line(x1, y1, x2, y2,
+                                    width=self.brush_size,
+                                    fill=self.brush_color,
+                                    capstyle=tk.ROUND, smooth=True)
+            # Draw on the PIL image as well
+            draw = ImageDraw.Draw(self.image)
+            scale_x = self.image.size[0] / self.displayed_image_info["width"]
+            scale_y = self.image.size[1] / self.displayed_image_info["height"]
 
-            self.crop_overlay_ids.extend([
-                self.canvas.create_rectangle(0, 0, w, y1, fill="black", stipple="gray25", width=0),
-                self.canvas.create_rectangle(0, y1, x1, y2, fill="black", stipple="gray25", width=0),
-                self.canvas.create_rectangle(x2, y1, w, y2, fill="black", stipple="gray25", width=0),
-                self.canvas.create_rectangle(0, y2, w, h, fill="black", stipple="gray25", width=0)
-            ])
+            # Adjust coords relative to displayed image offset and scale
+            adj_x1 = int((x1 - self.displayed_image_info["x"]) * scale_x)
+            adj_y1 = int((y1 - self.displayed_image_info["y"]) * scale_y)
+            adj_x2 = int((x2 - self.displayed_image_info["x"]) * scale_x)
+            adj_y2 = int((y2 - self.displayed_image_info["y"]) * scale_y)
+
+            draw.line([adj_x1, adj_y1, adj_x2, adj_y2], fill=self.brush_color, width=self.brush_size)
+            self.last_draw_pos = (x2, y2)
 
     def on_mouse_release(self, event):
         if not self.image or not self.rect_id:
             return  # Do nothing if no image or rectangle
-        if self.image and self.rect_id:
+        if self.option_var.get() == "Transform" and self.rect_id:
             bbox = self.canvas.bbox(self.rect_id)
             # Keep the black crop rectangle visible — do not delete it here
 
@@ -605,6 +669,9 @@ class PhotoEditor:
             if right - left > 10 and lower - upper > 10:
                 self.pending_crop_box = (left, upper, right, lower)
                 self.crop_controls.pack(pady=2)
+        elif self.option_var.get() == "Extra" and self.drawing_enabled:
+            # self.push_state()  # save state after finishing a stroke??
+            self.last_draw_pos = None
 
     def apply_crop(self):
         if self.pending_crop_box:
@@ -748,56 +815,6 @@ class PhotoEditor:
         self.drawing_enabled = False
         self.canvas.config(cursor="xterm")
 
-    def on_mouse_press(self, event):
-        if self.drawing_enabled:
-            self.last_draw_pos = (event.x, event.y)
-        else:
-            self.last_draw_pos = None
-
-    def on_mouse_drag(self, event):
-        if self.drawing_enabled and self.last_draw_pos:
-            x1, y1 = self.last_draw_pos
-            x2, y2 = event.x, event.y
-            # Draw line on canvas for preview
-            self.canvas.create_line(x1, y1, x2, y2,
-                                    width=self.brush_size,
-                                    fill=self.brush_color,
-                                    capstyle=tk.ROUND, smooth=True)
-            # Draw on the PIL image as well
-            draw = ImageDraw.Draw(self.image)
-            scale_x = self.image.size[0] / self.displayed_image_info["width"]
-            scale_y = self.image.size[1] / self.displayed_image_info["height"]
-
-            # Adjust coords relative to displayed image offset and scale
-            adj_x1 = int((x1 - self.displayed_image_info["x"]) * scale_x)
-            adj_y1 = int((y1 - self.displayed_image_info["y"]) * scale_y)
-            adj_x2 = int((x2 - self.displayed_image_info["x"]) * scale_x)
-            adj_y2 = int((y2 - self.displayed_image_info["y"]) * scale_y)
-
-            draw.line([adj_x1, adj_y1, adj_x2, adj_y2], fill=self.brush_color, width=self.brush_size)
-            self.last_draw_pos = (x2, y2)
-
-    def on_mouse_release(self, event):
-        if self.drawing_enabled:
-            self.push_state()  # save state after finishing a stroke
-            self.last_draw_pos = None
-
-    def on_canvas_click(self, event):
-        if self.text_mode:
-            # Remove previous overlay if any
-            if self.text_overlay:
-                self.text_overlay.destroy()
-                self.text_overlay = None
-
-            # Position text input box at click location
-            self.text_overlay = tk.Text(self.canvas, height=1, width=20,
-                                        font=("Arial", self.font_size_var.get()),
-                                        fg=self.text_color_var.get())
-            self.text_overlay.place(x=event.x, y=event.y)
-            self.text_overlay.focus_set()
-            self.text_overlay.bind("<Return>", self.finish_text_overlay)
-            self.text_overlay.bind("<Escape>", lambda e: self.text_overlay.destroy())
-
     def finish_text_overlay(self, event):
         text = self.text_overlay.get("1.0", "end-1c")
         x, y = self.text_overlay.winfo_x(), self.text_overlay.winfo_y()
@@ -864,7 +881,6 @@ if __name__ == "__main__":
 
 
 # FACE RECOGNITION??
-# DISABLE CROPPING IF NO IMAGE??
-# DELETE DETECT FACES?!
-# APPLYING FILTER AGAIN RETURNS TO ORIGINAL
 # IMPROVE SIZING OF CANVAS -> DYNAMICALLY??
+# SAVE AS??
+# SAVE DRAWING AND PUSH STATE AFTER EACH STROKE/TEXT ADDED!!
