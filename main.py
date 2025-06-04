@@ -14,19 +14,19 @@ class ToolTip:
     def __init__(self, widget, text):
         self.widget = widget
         self.text = text
-        self.tipwindow = None
+        self.tip_window = None
+        self.enabled = True
         self.widget.bind("<Enter>", self.show_tip)
         self.widget.bind("<Leave>", self.hide_tip)
 
     def show_tip(self, event=None):
-        if self.tipwindow or not self.text:
+        if not self.enabled or self.tip_window:
             return
-
         # Get mouse pointer location instead of relying on widget.bbox("insert")
         x = self.widget.winfo_pointerx() + 20
         y = self.widget.winfo_pointery() + 20
 
-        self.tipwindow = tw = tk.Toplevel(self.widget)
+        self.tip_window = tw = tk.Toplevel(self.widget)
         tw.wm_overrideredirect(True)  # Remove window decorations
         tw.wm_geometry(f"+{x}+{y}")
 
@@ -41,9 +41,16 @@ class ToolTip:
         label.pack(ipadx=5, ipady=2)
 
     def hide_tip(self, event=None):
-        if self.tipwindow:
-            self.tipwindow.destroy()
-            self.tipwindow = None
+        if self.tip_window:
+            self.tip_window.destroy()
+            self.tip_window = None
+
+    def enable(self):
+        self.enabled = True
+
+    def disable(self):
+        self.enabled = False
+        self.hide_tip()
 
 
 class PhotoEditor:
@@ -94,13 +101,24 @@ class PhotoEditor:
 
         self.start_x = self.start_y = self.rect_id = None
 
+        # Zoom attributes
+        self.zoom_factor = 1.0
+        self.min_zoom = 0.2
+        self.max_zoom = 5.0
+        self.canvas_offset = [0, 0]  # [x_offset, y_offset]
+
         # Canvas
         self.canvas = tk.Canvas(root, width=600, height=400, bg='gray')
         self.canvas.pack(pady=20)
         self.canvas.bind("<ButtonPress-1>", self.on_mouse_press)
         self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_mouse_release)
-        ToolTip(self.canvas, "Drag your mouse to crop the image")
+        self.canvas_tooltip = ToolTip(self.canvas, "Drag your mouse to crop the image")
+
+        # Bind zoom to mousewheel
+        self.canvas.bind("<MouseWheel>", self.on_mouse_wheel)  # Windows and Mac
+        self.canvas.bind("<Button-4>", self.on_mouse_wheel)  # Linux scroll up
+        self.canvas.bind("<Button-5>", self.on_mouse_wheel)  # Linux scroll down
 
         self.pending_crop_box = None
         self.crop_overlay_ids = []
@@ -220,12 +238,13 @@ class PhotoEditor:
                 self.brightness_slider.set(1.0)
                 self.contrast_slider.set(1.0)
                 self.push_state()
-                self.root.after(100, self.display_image)
+                self.root.after(100, self.reset_zoom())
                 self.set_category_buttons_state("normal")
                 self.set_all_controls_state("normal")
             else:
                 self.set_category_buttons_state("disabled")
                 self.set_all_controls_state("disabled")
+                self.canvas_tooltip.disable()
                 self.canvas.create_text(300, 200, text="Load or capture an image to begin.", fill="white",
                                         font=("Arial", 16))
 
@@ -307,9 +326,10 @@ class PhotoEditor:
             self.image = Image.open(path)
             self.push_state()
             self.original_image = self.image.copy()
-            self.display_image()
             self.set_category_buttons_state("normal")
             self.set_all_controls_state("normal")
+            self.canvas_tooltip.enable()
+            self.reset_zoom()
 
     def capture_photo(self):
         self.brightness_slider.set(1.0)
@@ -361,18 +381,25 @@ class PhotoEditor:
                 os.remove("captured_webcam_image.jpg")  # delete immediately after loading
                 self.push_state()
                 self.original_image = self.image.copy()
-                self.display_image()
                 self.set_category_buttons_state("normal")
                 self.set_all_controls_state("normal")
+                self.canvas_tooltip.enable()
+                self.reset_zoom()
                 return
 
     def display_image(self):
         if self.image:
-            # Get original image size
             img = self.image.copy()
             img_width, img_height = img.size
 
-            # Get canvas size
+            # Resize for zoom
+            zoomed_width = int(img_width * self.zoom_factor)
+            zoomed_height = int(img_height * self.zoom_factor)
+            img = img.resize((zoomed_width, zoomed_height), Image.Resampling.LANCZOS)
+
+            self.tk_image = ImageTk.PhotoImage(img)
+            self.canvas.delete("all")
+
             canvas_width = self.canvas.winfo_width()
             canvas_height = self.canvas.winfo_height()
 
@@ -381,31 +408,87 @@ class PhotoEditor:
                 canvas_width = 600
                 canvas_height = 400
 
-            # Calculate the resize ratio while keeping aspect ratio
-            ratio = min(canvas_width / img_width, canvas_height / img_height)
-            new_size = (int(img_width * ratio), int(img_height * ratio))
-            img = img.resize(new_size, Image.Resampling.LANCZOS)
+            # Default center if no offset
+            if not hasattr(self, "canvas_offset"):
+                self.canvas_offset = [canvas_width // 2 - zoomed_width // 2,
+                                      canvas_height // 2 - zoomed_height // 2]
 
-            # Display image on canvas
-            self.tk_image = ImageTk.PhotoImage(img)
-            self.canvas.delete("all")
-            x_center = canvas_width // 2
-            y_center = canvas_height // 2
-            self.canvas_image_id = self.canvas.create_image(x_center, y_center, image=self.tk_image)
+            # Draw image at offset
+            self.canvas_image_id = self.canvas.create_image(
+                self.canvas_offset[0], self.canvas_offset[1],
+                anchor="nw", image=self.tk_image
+            )
 
-            # Store coordinates of image on canvas for cropping
+            # Update displayed image info for cropping
             self.displayed_image_info = {
-                "x": x_center - new_size[0] // 2,
-                "y": y_center - new_size[1] // 2,
-                "width": new_size[0],
-                "height": new_size[1],
-                "scale_x": self.image.size[0] / new_size[0],
-                "scale_y": self.image.size[1] / new_size[1]
+                "x": self.canvas_offset[0],
+                "y": self.canvas_offset[1],
+                "width": zoomed_width,
+                "height": zoomed_height,
+                "scale_x": self.image.size[0] / zoomed_width,
+                "scale_y": self.image.size[1] / zoomed_height
             }
+
+    # zoom utility functions
+
+    def on_mouse_wheel(self, event):
+        if not self.image:
+            return
+
+        # Determine zoom direction
+        if event.num == 4 or event.delta > 0:
+            scale = 1.1
+        elif event.num == 5 or event.delta < 0:
+            scale = 0.9
+        else:
+            return
+
+        # Compute new zoom factor within limits
+        new_zoom = self.zoom_factor * scale
+        if not (self.min_zoom <= new_zoom <= self.max_zoom):
+            return
+
+        # Get mouse pointer coordinates relative to canvas
+        canvas_x = self.canvas.canvasx(event.x)
+        canvas_y = self.canvas.canvasy(event.y)
+
+        # Adjust offset so the image zooms around the cursor
+        self.canvas_offset[0] = (self.canvas_offset[0] - canvas_x) * scale + canvas_x
+        self.canvas_offset[1] = (self.canvas_offset[1] - canvas_y) * scale + canvas_y
+
+        self.zoom_factor = new_zoom
+        self.display_image()
+
+    def reset_zoom(self):
+        if not self.image:
+            return
+
+        img_width, img_height = self.image.size
+        canvas_width = self.canvas.winfo_width()
+        canvas_height = self.canvas.winfo_height()
+
+        # Calculate zoom factor to fit image inside canvas
+        zoom_x = canvas_width / img_width
+        zoom_y = canvas_height / img_height
+        self.zoom_factor = min(zoom_x, zoom_y, self.max_zoom)
+
+        # Calculate new zoomed image size
+        zoomed_width = int(img_width * self.zoom_factor)
+        zoomed_height = int(img_height * self.zoom_factor)
+
+        # Center the image
+        offset_x = (canvas_width - zoomed_width) // 2
+        offset_y = (canvas_height - zoomed_height) // 2
+        self.canvas_offset = [offset_x, offset_y]
+
+        self.display_image()
 
     # cropping utility functions
 
     def on_mouse_press(self, event):
+        if not self.image:
+            return  # Do nothing if no image is loaded
+
         self.start_x = event.x
         self.start_y = event.y
         if self.rect_id:
@@ -413,6 +496,9 @@ class PhotoEditor:
         self.rect_id = self.canvas.create_rectangle(self.start_x, self.start_y, self.start_x, self.start_y, outline='black')
 
     def on_mouse_drag(self, event):
+        if not self.image:
+            return  # Do nothing if no image is loaded
+
         end_x = event.x
         end_y = event.y
 
@@ -463,6 +549,8 @@ class PhotoEditor:
             ])
 
     def on_mouse_release(self, event):
+        if not self.image or not self.rect_id:
+            return  # Do nothing if no image or rectangle
         if self.image and self.rect_id:
             bbox = self.canvas.bbox(self.rect_id)
             # Keep the black crop rectangle visible — do not delete it here
