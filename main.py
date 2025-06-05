@@ -113,8 +113,8 @@ class PhotoEditor:
         self.canvas.bind("<ButtonPress-1>", self.on_mouse_press)
         self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_mouse_release)
-        # self.canvas.bind("<Button-1>", self.on_canvas_click)
 
+        self.canvas.config(cursor="arrow")
         self.canvas_tooltip = ToolTip(self.canvas, "Drag your mouse to crop the image")
 
         # Bind zoom to mousewheel
@@ -262,6 +262,12 @@ class PhotoEditor:
         self.text_color_var = tk.StringVar(value=self.text_color)
         tk.Entry(text_frame, textvariable=self.text_color_var, width=8).pack(side="left", padx=5)
         text_frame.pack(pady=(0, 10))
+
+        # confirmation button
+        button_frame = tk.Frame(extra_frame)
+        tk.Button(button_frame, text="Confirm", command=self.confirm_changes).pack(side="left", padx=5)
+        tk.Button(button_frame, text="Reset", command=self.reset_changes).pack(side="left", padx=5)
+        button_frame.pack(pady=(0, 10))
         self.tool_frames["Extra"] = extra_frame
 
         # Load last session image
@@ -366,7 +372,8 @@ class PhotoEditor:
             self.original_image = self.image.copy()
             self.set_category_buttons_state("normal")
             self.set_all_controls_state("normal")
-            self.canvas_tooltip.enable()
+            if self.option_var.get() == "Transform":
+                self.canvas_tooltip.enable()
             self.reset_zoom()
 
     def capture_photo(self):
@@ -421,7 +428,8 @@ class PhotoEditor:
                 self.original_image = self.image.copy()
                 self.set_category_buttons_state("normal")
                 self.set_all_controls_state("normal")
-                self.canvas_tooltip.enable()
+                if self.option_var.get() == "Transform":
+                    self.canvas_tooltip.enable()
                 self.reset_zoom()
                 return
 
@@ -521,13 +529,14 @@ class PhotoEditor:
 
         self.display_image()
 
-    # cropping utility functions
+    # mouse-canvas utility functions
 
     def on_mouse_press(self, event):
         if not self.image:
             return  # Do nothing if no image is loaded
         if self.option_var.get() == "Transform":
             # Cropping mode
+            self.push_state()
             self.start_x = event.x
             self.start_y = event.y
 
@@ -544,6 +553,7 @@ class PhotoEditor:
         elif self.option_var.get() == "Extra" and self.text_mode:
             # Remove previous overlay if any
             if self.text_overlay:
+                self.push_state()
                 self.text_overlay.destroy()
                 self.text_overlay = None
 
@@ -670,8 +680,10 @@ class PhotoEditor:
                 self.pending_crop_box = (left, upper, right, lower)
                 self.crop_controls.pack(pady=2)
         elif self.option_var.get() == "Extra" and self.drawing_enabled:
-            # self.push_state()  # save state after finishing a stroke??
+            self.push_state()  # save state after finishing a stroke??
             self.last_draw_pos = None
+
+    # cropping utility functions
 
     def apply_crop(self):
         if self.pending_crop_box:
@@ -848,6 +860,17 @@ class PhotoEditor:
         self.canvas.config(cursor="arrow")
         return "break"
 
+    def confirm_changes(self):
+        self.push_state()
+        self.plain_image = self.image.copy()
+        self.image.save("new_image.jpg")
+        self.image = Image.open("new_image.jpg")
+        self.original_image = self.image.copy()
+        self.display_image()
+
+    def reset_changes(self):
+        self.image = self.plain_image
+
     # save & exit functions
 
     def save_image(self):
@@ -883,4 +906,4 @@ if __name__ == "__main__":
 # FACE RECOGNITION??
 # IMPROVE SIZING OF CANVAS -> DYNAMICALLY??
 # SAVE AS??
-# SAVE DRAWING AND PUSH STATE AFTER EACH STROKE/TEXT ADDED!!
+# UNDO EACH INDIVIDUAL STROKE/TEXT ADDED AND RESET THE DRAWINGS/TEXT!!
