@@ -56,7 +56,7 @@ class ToolTip:
 class PhotoEditor:
     def __init__(self, root):
         self.root = root
-        self.root.title("Simple Photo Editor")
+        self.root.title("Photo Editor")
         self.root.geometry("800x600")
 
         # Create menu bar
@@ -75,6 +75,8 @@ class PhotoEditor:
         edit_menu = tk.Menu(menubar, tearoff=0)
         edit_menu.add_command(label="Undo\tCtrl+Z", command=self.undo)
         edit_menu.add_command(label="Redo\tCtrl+Y", command=self.redo)
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Revert to original\tCtrl+G", command=self.revert_to_original)
         menubar.add_cascade(label="Edit", menu=edit_menu)
 
         # Help menu
@@ -88,6 +90,7 @@ class PhotoEditor:
         self.root.bind_all("<Control-s>", lambda event: self.save_image())
         self.root.bind_all("<Control-z>", lambda event: self.undo())
         self.root.bind_all("<Control-y>", lambda event: self.redo())
+        self.root.bind_all("<Control-g>", lambda event: self.revert_to_original())
         self.root.bind_all("<Control-q>", lambda event: self.exit_program())
         self.root.bind_all("<F1>", lambda event: self.show_about())
 
@@ -96,8 +99,8 @@ class PhotoEditor:
         self.image = None
         self.tk_image = None
         self.canvas_image_id = None
-        self.image_stack = []
-        self.redo_stack = []
+        self.history_stack = []  # For undo
+        self.history_redo_stack = []  # For redo
 
         self.start_x = self.start_y = self.rect_id = None
 
@@ -106,6 +109,8 @@ class PhotoEditor:
         self.min_zoom = 0.2
         self.max_zoom = 5.0
         self.canvas_offset = [0, 0]  # [x_offset, y_offset]
+        self.brightness = 1.0
+        self.contrast = 1.0
 
         # Canvas
         self.canvas = tk.Canvas(root, width=600, height=400, bg='gray')
@@ -167,12 +172,12 @@ class PhotoEditor:
         # Transform tools
         transform_frame = tk.Frame(self.tools_container)
         button_row = tk.Frame(transform_frame)
-        tk.Button(button_row, text="Rotate", command=lambda: self.rotate_image(90)).pack(side="left", padx=5)
+        tk.Button(button_row, text="Rotate", command=self.append_rotate).pack(side="left", padx=5)
         tk.Button(button_row, text="Flip Horizontal", command=self.flip_horizontal).pack(side="left", padx=5)
         tk.Button(button_row, text="Flip Vertical", command=self.flip_vertical).pack(side="left", padx=5)
         button_row.pack(pady=(0, 10))
         self.crop_controls = tk.Frame(transform_frame)
-        tk.Button(self.crop_controls, text="Apply Crop", command=self.apply_crop).pack(side="left", padx=5)
+        tk.Button(self.crop_controls, text="Apply Crop", command=self.append_crop).pack(side="left", padx=5)
         tk.Button(self.crop_controls, text="Cancel Crop", command=self.cancel_crop).pack(side="left", padx=5)
         self.crop_controls.pack_forget()
 
@@ -231,10 +236,10 @@ class PhotoEditor:
         self.contrast_slider.pack(side="top", fill="x", padx=10)
 
         # Bind same update logic
-        self.brightness_slider.config(command=self.preview_tone_adjustments)
-        self.contrast_slider.config(command=self.preview_tone_adjustments)
-        self.brightness_slider.bind("<ButtonPress-1>", self.prepare_for_tone_adjustment)
-        self.contrast_slider.bind("<ButtonPress-1>", self.prepare_for_tone_adjustment)
+        # self.brightness_slider.config(command=self.preview_tone_adjustments)
+        # self.contrast_slider.config(command=self.preview_tone_adjustments)
+        self.brightness_slider.bind("<ButtonRelease-1>", self.append_tone)
+        self.contrast_slider.bind("<ButtonRelease-1>", self.append_tone)
 
         self.tool_frames["Tone"] = tone_frame
 
@@ -242,7 +247,13 @@ class PhotoEditor:
         extra_frame = tk.Frame(self.tools_container)
         # Add drawing toggle button
         drawing_frame = tk.Frame(extra_frame)
-        ttk.Checkbutton(drawing_frame, text="Toggle Drawing", command=self.toggle_drawing).pack(side="left", padx=5)
+        self.drawing_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            drawing_frame,
+            text="Toggle Drawing",
+            variable=self.drawing_var,
+            command=self.toggle_drawing
+        ).pack(side="left", padx=5)
         # Brush size slider
         tk.Label(drawing_frame, text="Brush Size:").pack(side="left", padx=5)
         self.brush_slider = ttk.Scale(drawing_frame, from_=1, to=20, orient='horizontal', command=self.update_brush_size)
@@ -264,10 +275,10 @@ class PhotoEditor:
         text_frame.pack(pady=(0, 10))
 
         # confirmation button
-        button_frame = tk.Frame(extra_frame)
-        tk.Button(button_frame, text="Confirm", command=self.confirm_changes).pack(side="left", padx=5)
-        tk.Button(button_frame, text="Reset", command=self.reset_changes).pack(side="left", padx=5)
-        button_frame.pack(pady=(0, 10))
+        # button_frame = tk.Frame(extra_frame)
+        # tk.Button(button_frame, text="Confirm", command=self.confirm_changes).pack(side="left", padx=5)
+        # tk.Button(button_frame, text="Reset", command=self.reset_changes).pack(side="left", padx=5)
+        # button_frame.pack(pady=(0, 10))
         self.tool_frames["Extra"] = extra_frame
 
         # Load last session image
@@ -275,12 +286,17 @@ class PhotoEditor:
             if messagebox.askyesno("Load image", "Do you want to load the image from the last session?"):
                 self.image = Image.open("last_session_image.jpg")
                 self.original_image = self.image.copy()
+                self.pre_overlay_image = self.image.copy()
+                self.history_stack.clear()
+                self.history_redo_stack.clear()
                 self.brightness_slider.set(1.0)
                 self.contrast_slider.set(1.0)
-                self.push_state()
-                self.root.after(100, self.reset_zoom())
+                self.reset_filter_states()
+                self.update_filter_button_colors()
+                self.update_filtered_image()
                 self.set_category_buttons_state("normal")
                 self.set_all_controls_state("normal")
+                self.root.after(100, self.reset_zoom())
             else:
                 self.set_category_buttons_state("disabled")
                 self.set_all_controls_state("disabled")
@@ -291,9 +307,13 @@ class PhotoEditor:
         self.update_button_frame()
         self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
+    # utility functions
+
     def update_button_frame(self):
         selected = self.option_var.get()
-        if self.option_var.get() == "Transform":
+        if selected != "Extra":
+            self.canvas.config(cursor="arrow")
+        if selected == "Transform":
             self.canvas_tooltip.enable()
         else:
             self.canvas_tooltip.disable()
@@ -316,48 +336,49 @@ class PhotoEditor:
         for frame in self.tool_frames.values():
             self.set_state_recursive(frame, state)
 
-    def push_state(self):
+    def reset_filter_states(self):
+        self.filter_states = {
+            "grayscale": False,
+            "sepia": False,
+            "invert": False,
+            "blur": False
+        }
+
+    # undo/redo logic
+
+    def push_state(self, action_type, data):
         if self.image:
-            state = {
-                "image": self.image.copy(),
-                "brightness": self.brightness_slider.get(),
-                "contrast": self.contrast_slider.get()
-                # add rotation and flip to make even better
-            }
-            self.image_stack.append(state)
-            if len(self.image_stack) > 20:
-                self.image_stack.pop(0)
-            self.redo_stack.clear()
+            """
+            action_type: 'image' or 'overlay'
+            data: For 'image' – dict with image and UI state;
+                  For 'overlay' – dict with action info (stroke or text)
+            """
+            self.history_stack.append({
+                "type": action_type,
+                "data": data
+            })
+            self.history_redo_stack.clear()
+
+            if len(self.history_stack) > 20:
+                self.history_stack.pop(0)
 
     def undo(self):
-        if self.image_stack:
-            current_state = {
-                "image": self.image.copy(),
-                "brightness": self.brightness_slider.get(),
-                "contrast": self.contrast_slider.get()
-            }
-            self.redo_stack.append(current_state)
+        if not self.history_stack:
+            return
+        last = self.history_stack.pop()
+        self.history_redo_stack.append(last)
 
-            last_state = self.image_stack.pop()
-            self.image = last_state["image"]
-            self.brightness_slider.set(last_state["brightness"])
-            self.contrast_slider.set(last_state["contrast"])
-            self.display_image()
+        self.apply_all_edits()
 
     def redo(self):
-        if self.redo_stack:
-            current_state = {
-                "image": self.image.copy(),
-                "brightness": self.brightness_slider.get(),
-                "contrast": self.contrast_slider.get()
-            }
-            self.image_stack.append(current_state)
+        if not self.history_redo_stack:
+            return
+        action = self.history_redo_stack.pop()
+        self.history_stack.append(action)
 
-            next_state = self.redo_stack.pop()
-            self.image = next_state["image"]
-            self.brightness_slider.set(next_state["brightness"])
-            self.contrast_slider.set(next_state["contrast"])
-            self.display_image()
+        self.apply_all_edits()
+
+    # menu functions
 
     def show_about(self):
         messagebox.showinfo("About", "Simple Photo Editor\nCreated with Tkinter and Pillow.")
@@ -368,8 +389,15 @@ class PhotoEditor:
         path = filedialog.askopenfilename(filetypes=[("Image files", "*.png *.jpg *.jpeg")])
         if path:
             self.image = Image.open(path)
-            self.push_state()
             self.original_image = self.image.copy()
+            self.pre_overlay_image = self.image.copy()
+            self.history_stack.clear()
+            self.history_redo_stack.clear()
+            self.brightness_slider.set(1.0)
+            self.contrast_slider.set(1.0)
+            self.reset_filter_states()
+            self.update_filter_button_colors()
+            self.update_filtered_image()
             self.set_category_buttons_state("normal")
             self.set_all_controls_state("normal")
             if self.option_var.get() == "Transform":
@@ -407,11 +435,13 @@ class PhotoEditor:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
 
-            # Draw rectangles around detected faces
+            # Draw rectangles around detected faces - Make a copy for display (with rectangles)
+            display_frame = frame.copy()
             for (x, y, w, h) in faces:
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 255, 255), 2)
+                cv2.rectangle(display_frame, (x, y), (x + w, y + h), (255, 255, 255), 2)
 
-            cv2.imshow("Press SPACE to capture", frame)
+            cv2.imshow("Press SPACE to capture", display_frame)
+
             key = cv2.waitKey(1)
             if key == 27:  # ESC to cancel
                 cap.release()
@@ -424,8 +454,15 @@ class PhotoEditor:
                 with Image.open("captured_webcam_image.jpg") as img:
                     self.image = img.copy()
                 os.remove("captured_webcam_image.jpg")  # delete immediately after loading
-                self.push_state()
                 self.original_image = self.image.copy()
+                self.pre_overlay_image = self.image.copy()
+                self.history_stack.clear()
+                self.history_redo_stack.clear()
+                self.brightness_slider.set(1.0)
+                self.contrast_slider.set(1.0)
+                self.reset_filter_states()
+                self.update_filter_button_colors()
+                self.update_filtered_image()
                 self.set_category_buttons_state("normal")
                 self.set_all_controls_state("normal")
                 if self.option_var.get() == "Transform":
@@ -536,7 +573,6 @@ class PhotoEditor:
             return  # Do nothing if no image is loaded
         if self.option_var.get() == "Transform":
             # Cropping mode
-            self.push_state()
             self.start_x = event.x
             self.start_y = event.y
 
@@ -548,12 +584,11 @@ class PhotoEditor:
                                                         outline='black')
         elif self.option_var.get() == "Extra" and self.drawing_enabled:
             # Drawing mode
-            self.push_state()
             self.last_draw_pos = (event.x, event.y)
+            self.current_stroke = []
         elif self.option_var.get() == "Extra" and self.text_mode:
             # Remove previous overlay if any
             if self.text_overlay:
-                self.push_state()
                 self.text_overlay.destroy()
                 self.text_overlay = None
 
@@ -638,7 +673,6 @@ class PhotoEditor:
                                     fill=self.brush_color,
                                     capstyle=tk.ROUND, smooth=True)
             # Draw on the PIL image as well
-            draw = ImageDraw.Draw(self.image)
             scale_x = self.image.size[0] / self.displayed_image_info["width"]
             scale_y = self.image.size[1] / self.displayed_image_info["height"]
 
@@ -648,11 +682,18 @@ class PhotoEditor:
             adj_x2 = int((x2 - self.displayed_image_info["x"]) * scale_x)
             adj_y2 = int((y2 - self.displayed_image_info["y"]) * scale_y)
 
-            draw.line([adj_x1, adj_y1, adj_x2, adj_y2], fill=self.brush_color, width=self.brush_size)
+            # Save the stroke as an action
+            self.current_stroke.append({
+                "type": "stroke",
+                "coords": [(adj_x1, adj_y1), (adj_x2, adj_y2)],
+                "color": self.brush_color,
+                "width": self.brush_size
+            })
+
             self.last_draw_pos = (x2, y2)
 
     def on_mouse_release(self, event):
-        if not self.image or not self.rect_id:
+        if not self.image: # or not self.rect_id:
             return  # Do nothing if no image or rectangle
         if self.option_var.get() == "Transform" and self.rect_id:
             bbox = self.canvas.bbox(self.rect_id)
@@ -680,20 +721,32 @@ class PhotoEditor:
                 self.pending_crop_box = (left, upper, right, lower)
                 self.crop_controls.pack(pady=2)
         elif self.option_var.get() == "Extra" and self.drawing_enabled:
-            self.push_state()  # save state after finishing a stroke??
+            if self.current_stroke:
+                self.push_state("overlay", {
+                    "action": {
+                        "type": "stroke_group",
+                        "strokes": self.current_stroke
+                    }
+                })
+                self.apply_all_edits()
             self.last_draw_pos = None
 
     # cropping utility functions
 
-    def apply_crop(self):
-        if self.pending_crop_box:
-            self.push_state()
-            self.image = self.image.crop(self.pending_crop_box)
-            self.pending_crop_box = None
-            self.crop_controls.pack_forget()
-            self.display_image()
-            # Remove overlay artifacts
-            self.clear_crop_overlay()
+    def append_crop(self):
+        self.push_state("crop", {
+                "box": self.pending_crop_box
+            })
+        self.pending_crop_box = None
+        self.crop_controls.pack_forget()
+        # Remove overlay artifacts
+        self.clear_crop_overlay()
+        self.apply_all_edits()
+
+    def apply_crop(self, box):
+        if self.image:
+            self.image = self.image.crop(box)
+            self.pre_overlay_image = self.image.copy()
 
     def cancel_crop(self):
         self.pending_crop_box = None
@@ -713,45 +766,60 @@ class PhotoEditor:
 
     # transforming functions
 
+    def append_rotate(self):
+        self.push_state("rotate", {
+            "angle": 90
+        })
+        self.apply_all_edits()
+
     def rotate_image(self, angle):
         if self.image:
-            self.push_state()
             self.image = self.image.rotate(angle, expand=True)
-            self.display_image()
-
-    def flip_horizontal(self):
-        if self.image:
-            self.push_state()
-            self.image = self.image.transpose(Image.FLIP_LEFT_RIGHT)
-            self.display_image()
+            self.pre_overlay_image = self.image.copy()
 
     def flip_vertical(self):
+        self.push_state("flip", {
+            "direction": "vertical"
+        })
+        self.apply_all_edits()
+
+    def flip_horizontal(self):
+        self.push_state("flip", {
+            "direction": "horizontal"
+        })
+        self.apply_all_edits()
+
+    def apply_flip(self, dir):
         if self.image:
-            self.push_state()
-            self.image = self.image.transpose(Image.FLIP_TOP_BOTTOM)
-            self.display_image()
+            if dir == "vertical":
+                self.image = self.image.transpose(Image.FLIP_TOP_BOTTOM)
+            elif dir == "horizontal":
+                self.image = self.image.transpose(Image.FLIP_LEFT_RIGHT)
+            self.pre_overlay_image = self.image.copy()
 
     # filter functions
 
+    def append_filter(self):
+        self.push_state("filter", {
+            "filters": self.filter_states
+        })
+        self.apply_all_edits()
+
     def apply_grayscale(self):
         self.filter_states["grayscale"] = not self.filter_states["grayscale"]
-        self.update_filter_button_colors()
-        self.update_filtered_image()
+        self.append_filter()
 
     def apply_sepia(self):
         self.filter_states["sepia"] = not self.filter_states["sepia"]
-        self.update_filter_button_colors()
-        self.update_filtered_image()
+        self.append_filter()
 
     def apply_invert(self):
         self.filter_states["invert"] = not self.filter_states["invert"]
-        self.update_filter_button_colors()
-        self.update_filtered_image()
+        self.append_filter()
 
     def apply_blur(self):
         self.filter_states["blur"] = not self.filter_states["blur"]
-        self.update_filter_button_colors()
-        self.update_filtered_image()
+        self.append_filter()
 
     def update_filter_button_colors(self):
         for name, button in self.filter_buttons.items():
@@ -764,8 +832,7 @@ class PhotoEditor:
         if not hasattr(self, 'original_image') or self.original_image is None:
             return
 
-        self.push_state()
-        img = self.original_image.copy()
+        img = self.image.copy()
 
         if self.filter_states["grayscale"]:
             img = img.convert("L").convert("RGB")
@@ -788,14 +855,25 @@ class PhotoEditor:
         if self.filter_states["blur"]:
             img = img.filter(ImageFilter.GaussianBlur(10))
 
+        # print(self.history_stack[-1])
+
         self.image = img
-        self.display_image()
 
     # tone functions
 
-    def prepare_for_tone_adjustment(self, event=None):
+    def append_tone(self, event=None):
+        self.push_state("tone", {
+            "brightness": self.brightness_slider.get(),
+            "contrast": self.contrast_slider.get(),
+        })
+        self.apply_all_edits()
+
+    def apply_tone_adjustments(self, event=None):
         if self.image:
-            self.push_state()
+            img = ImageEnhance.Brightness(self.image).enhance(self.brightness)
+            img = ImageEnhance.Contrast(img).enhance(self.contrast)
+
+            self.image = img
 
     def preview_tone_adjustments(self, event=None):
         if self.image:
@@ -811,65 +889,122 @@ class PhotoEditor:
     # extra functions
 
     def toggle_drawing(self):
-        self.drawing_enabled = not self.drawing_enabled
-        self.text_mode = False  # disable text mode if drawing enabled
-        self.last_draw_pos = None
-        if self.drawing_enabled:
-            self.canvas.config(cursor="pencil")
+        if self.drawing_var.get():
+            # Save a backup before drawing starts once
+            if not hasattr(self, 'pre_overlay_image'):
+                self.pre_overlay_image = self.image.copy()
+            self.drawing_enabled = not self.drawing_enabled
+            self.text_mode = False  # disable text mode if drawing enabled
+            self.last_draw_pos = None
+            if self.drawing_enabled:
+                self.canvas.config(cursor="pencil")
         else:
+            self.drawing_enabled = not self.drawing_enabled
             self.canvas.config(cursor="arrow")
 
     def update_brush_size(self, val):
         self.brush_size = int(float(val))
 
     def activate_text_mode(self):
+        # Save backup before text if not already defined through drawing
+        if not hasattr(self, 'pre_overlay_image'):
+            self.pre_overlay_image = self.image.copy()
         self.text_mode = True
-        self.drawing_enabled = False
+        if self.drawing_var.get():
+            self.drawing_var.set(False)
+            self.drawing_enabled = False
         self.canvas.config(cursor="xterm")
 
-    def finish_text_overlay(self, event):
-        text = self.text_overlay.get("1.0", "end-1c")
+    def finish_text_overlay(self, event=None):
+        if not self.text_overlay:
+            return "break"
+
+        text = self.text_overlay.get("1.0", "end-1c").strip()
         x, y = self.text_overlay.winfo_x(), self.text_overlay.winfo_y()
         font_size = self.font_size_var.get()
         color = self.text_color_var.get()
 
-        if text.strip():
-            # Draw text on canvas for preview
-            self.canvas.create_text(x, y, text=text, anchor="nw",
-                                    font=("Arial", font_size), fill=color)
+        if text:
+            # Save action instead of drawing directly to the image
+            self.push_state("overlay", {
+                "action": {
+                    "type": "text",
+                    "text": text,
+                    "position": (x, y),
+                    "font_size": font_size,
+                    "color": color
+                }
+            })
 
-            # Draw text on PIL image (scaled coordinates)
-            draw = ImageDraw.Draw(self.image)
-            scale_x = self.image.size[0] / self.displayed_image_info["width"]
-            scale_y = self.image.size[1] / self.displayed_image_info["height"]
-            adj_x = int((x - self.displayed_image_info["x"]) * scale_x)
-            adj_y = int((y - self.displayed_image_info["y"]) * scale_y)
+            self.apply_all_edits()
 
-            try:
-                from PIL import ImageFont
-                font = ImageFont.truetype("arial.ttf", font_size)
-            except:
-                font = None  # fallback if font not found
-
-            draw.text((adj_x, adj_y), text, font=font, fill=color)
-            self.push_state()  # save state after adding text
-
+        # Clean up the overlay input
         self.text_overlay.destroy()
         self.text_overlay = None
         self.text_mode = False
         self.canvas.config(cursor="arrow")
         return "break"
 
-    def confirm_changes(self):
-        self.push_state()
-        self.plain_image = self.image.copy()
-        self.image.save("new_image.jpg")
-        self.image = Image.open("new_image.jpg")
-        self.original_image = self.image.copy()
+    def reapply_overlay_actions(self):
+        if not hasattr(self, 'pre_overlay_image') or self.pre_overlay_image is None:
+            return
+
+        # Start from a clean image (before overlays)
+        self.image = self.pre_overlay_image.copy()
+        draw = ImageDraw.Draw(self.image)
+
+        for entry in self.history_stack:
+            if entry["type"] != "overlay":
+                continue
+
+            action = entry["data"]["action"]
+
+            # if action["type"] == "stroke":
+                # draw.line(action["coords"], fill=action["color"], width=action["width"])
+
+            if action["type"] == "stroke_group":
+                for stroke in action["strokes"]:
+                    draw.line(stroke["coords"], fill=stroke["color"], width=stroke["width"])
+
+            elif action["type"] == "text":
+                try:
+                    from PIL import ImageFont
+                    font = ImageFont.truetype("arial.ttf", action["font_size"]*4)
+                except:
+                    font = None  # Use default if arial.ttf is not found
+                draw.text(action["position"], action["text"], font=font, fill=action["color"])
+
+    def apply_all_edits(self):
+        self.image = self.original_image.copy()
+        self.brightness = 1.0
+        self.contrast = 1.0
+        for i in self.history_stack:
+            if i["type"] == "crop":
+                self.apply_crop(i["data"]["box"])
+            elif i["type"] == "rotate":
+                self.rotate_image(i["data"]["angle"])
+            elif i["type"] == "flip":
+                self.apply_flip(i["data"]["direction"])
+            elif i["type"] == "filter":
+                self.filter_states = i["data"]["filters"]
+            elif i["type"] == "tone":
+                self.brightness = float(i["data"]["brightness"])
+                self.contrast = float(i["data"]["contrast"])
+            elif i["type"] == "overlay":
+                self.reapply_overlay_actions()
+        self.update_filter_button_colors()
+        self.update_filtered_image()
+        self.apply_tone_adjustments()
+        self.brightness_slider.set(self.brightness)
+        self.contrast_slider.set(self.contrast)
         self.display_image()
 
-    def reset_changes(self):
-        self.image = self.plain_image
+    def revert_to_original(self):
+        if self.image and hasattr(self, 'original_image'):
+            self.image = self.original_image.copy()
+            self.history_stack.clear()
+            self.history_redo_stack.clear()
+            self.display_image()
 
     # save & exit functions
 
@@ -901,9 +1036,3 @@ if __name__ == "__main__":
 
     root.protocol("WM_DELETE_WINDOW", on_closing)
     root.mainloop()
-
-
-# FACE RECOGNITION??
-# IMPROVE SIZING OF CANVAS -> DYNAMICALLY??
-# SAVE AS??
-# UNDO EACH INDIVIDUAL STROKE/TEXT ADDED AND RESET THE DRAWINGS/TEXT!!
