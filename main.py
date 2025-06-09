@@ -359,9 +359,6 @@ class PhotoEditor:
             })
             self.history_redo_stack.clear()
 
-            if len(self.history_stack) > 20:
-                self.history_stack.pop(0)
-
     def undo(self):
         if not self.history_stack:
             return
@@ -870,10 +867,8 @@ class PhotoEditor:
 
     def apply_tone_adjustments(self, event=None):
         if self.image:
-            img = ImageEnhance.Brightness(self.image).enhance(self.brightness)
-            img = ImageEnhance.Contrast(img).enhance(self.contrast)
-
-            self.image = img
+            self.image = ImageEnhance.Brightness(self.image).enhance(self.brightness)
+            self.image = ImageEnhance.Contrast(self.image).enhance(self.contrast)
 
     def preview_tone_adjustments(self, event=None):
         if self.image:
@@ -1002,6 +997,7 @@ class PhotoEditor:
     def revert_to_original(self):
         if self.image and hasattr(self, 'original_image'):
             self.image = self.original_image.copy()
+            self.pre_overlay_image = self.image.copy()
             self.history_stack.clear()
             self.history_redo_stack.clear()
             self.display_image()
