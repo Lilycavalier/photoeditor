@@ -3,7 +3,6 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk, ImageEnhance, ImageFilter, ImageOps, ImageDraw
 import cv2
 import os
-import numpy
 
 
 #-----------------------------
@@ -971,6 +970,7 @@ class PhotoEditor:
 
     def apply_all_edits(self):
         self.image = self.original_image.copy()
+        self.reset_filter_states()
         self.brightness = 1.0
         self.contrast = 1.0
         for i in self.history_stack:
