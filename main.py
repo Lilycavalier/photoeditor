@@ -3,6 +3,7 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk, ImageEnhance, ImageFilter, ImageOps, ImageDraw
 import cv2
 import os
+import copy
 
 
 #-----------------------------
@@ -797,7 +798,7 @@ class PhotoEditor:
 
     def append_filter(self):
         self.push_state("filter", {
-            "filters": self.filter_states
+            "filters": copy.deepcopy(self.filter_states)
         })
         self.apply_all_edits()
 
@@ -981,7 +982,7 @@ class PhotoEditor:
             elif i["type"] == "flip":
                 self.apply_flip(i["data"]["direction"])
             elif i["type"] == "filter":
-                self.filter_states = i["data"]["filters"]
+                self.filter_states = copy.deepcopy(i["data"]["filters"])
             elif i["type"] == "tone":
                 self.brightness = float(i["data"]["brightness"])
                 self.contrast = float(i["data"]["contrast"])
